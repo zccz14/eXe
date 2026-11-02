@@ -10,9 +10,15 @@ object Agent {
     }
 
     @JvmStatic
-    external fun nativeRun(configDir: String, baseUrl: String): Int
+    external fun nativeRun(configDir: String, cloud: String): Int
 
-    fun start(configDir: String, baseUrl: String) {
-        Thread({ nativeRun(configDir, baseUrl) }, "exe-agent").start()
+    /** The address to paste into the console; null when the key cannot be created. */
+    @JvmStatic
+    external fun nativeAddress(configDir: String): String?
+
+    fun start(configDir: String, cloud: String) {
+        Thread({ nativeRun(configDir, cloud) }, "exe-agent").start()
     }
+
+    fun address(configDir: String): String? = nativeAddress(configDir)
 }

@@ -1,18 +1,21 @@
 use anyhow::{bail, Result};
-use exe::{config, pair, run};
+use exe::{config, run};
+use exe_core::parse_address;
 use exe_core::policy::Policy;
+use exe_core::protocol::PolicyDecision;
 
 const HELP: &str = "\
 exe — eXe device agent
 
 USAGE:
-    exe run           Pair this device if needed, then keep the event stream open
-    exe pair          Force a new pairing (replaces the stored configuration)
-    exe status        Show configuration, identity and last known state
-    exe doctor        Check configuration, policy, reachability and SAS agreement
-    exe policy        Print the local policy path and contents
-    exe forget        Delete local credentials (the console still sees the device)
-    exe version       Print the agent version
+    exe run              Self-register and serve calls (creates the key on first run)
+    exe init             Create the key/config and print this device's address
+    exe trust <address>  Allow calls signed by this address (repeatable)
+    exe status           Show address, trust list and relay
+    exe doctor           Check key, trust, policy and relay reachability
+    exe policy           Print the local policy path and contents
+    exe forget           Delete the local key (the console can still call this address)
+    exe version          Print the agent version
 ";
 
 #[tokio::main(flavor = "multi_thread")]
@@ -23,33 +26,47 @@ async fn main() -> Result<()> {
         )
         .with_target(false)
         .init();
-    let command = std::env::args().nth(1).unwrap_or_else(|| "run".into());
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("exe/", env!("CARGO_PKG_VERSION")))
-        .build()?;
+    let mut args = std::env::args().skip(1);
+    let command = args.next().unwrap_or_else(|| "run".into());
     match command.as_str() {
         "run" => {
             config::ensure_policy()?;
-            let cfg = match config::load() {
-                Ok(cfg) => cfg,
-                Err(_) => {
-                    let base = base_url()?;
-                    pair::pair(&client, &base, announce_cli).await?
-                }
-            };
+            let (cfg, created) = config::load_or_create()?;
+            announce(&cfg, created);
             run::run(cfg).await
         }
-        "pair" => {
+        "init" => {
             config::ensure_policy()?;
-            let cfg = pair::pair(&client, &base_url()?, announce_cli).await?;
-            println!(
-                "  Paired as device {}. Run `exe run` to start serving.",
-                cfg.device_id
-            );
+            let (cfg, created) = config::load_or_create()?;
+            announce(&cfg, created);
+            println!("  Policy:  {}", config::policy_path().display());
+            println!();
+            println!("  Next: add the address above in the console, then give this device the");
+            println!("  console's address with `exe trust <address>` and run `exe run`.");
+            Ok(())
+        }
+        "trust" => {
+            let wanted: Vec<String> = args.collect();
+            if wanted.is_empty() {
+                bail!("usage: exe trust <address> [address...]");
+            }
+            for address in &wanted {
+                parse_address(address)
+                    .map_err(|_| anyhow::anyhow!("`{address}` is not an eXe address"))?;
+            }
+            let (mut cfg, _) = config::load_or_create()?;
+            for address in wanted {
+                if !cfg.trust.contains(&address) {
+                    cfg.trust.push(address);
+                }
+            }
+            config::save(&cfg)?;
+            println!("trust = {:?}", cfg.trust);
+            println!("Restart `exe run` for the new list to take effect.");
             Ok(())
         }
         "status" => status(),
-        "doctor" => doctor(&client).await,
+        "doctor" => doctor().await,
         "policy" => {
             let path = config::ensure_policy()?;
             println!("{}", path.display());
@@ -60,10 +77,9 @@ async fn main() -> Result<()> {
             let path = config::config_path();
             if path.exists() {
                 std::fs::remove_file(&path)?;
-                println!(
-                    "Removed {}. Revoke the device in the console to stop future calls.",
-                    path.display()
-                );
+                println!("Removed {}.", path.display());
+                println!("The address stays callable until it is removed from the console;");
+                println!("run `exe init` for a new key.");
             } else {
                 println!("No configuration at {}.", path.display());
             }
@@ -85,58 +101,69 @@ async fn main() -> Result<()> {
     }
 }
 
-fn announce_cli(code: &str, verify_uri: &str) {
+fn announce(cfg: &config::Config, created: bool) {
+    let address = cfg.address().unwrap_or_else(|_| "<invalid secret>".into());
     println!();
-    println!("  Pairing code:  \x1b[1m{code}\x1b[0m");
-    println!("  Approve at:    {verify_uri}");
-    println!();
-    println!("  Only approve this code yourself. Never approve a code someone sent you.");
-    println!();
-}
-
-fn base_url() -> Result<String> {
-    match std::env::var("EXE_BASE_URL") {
-        Ok(value) if !value.trim().is_empty() => Ok(value.trim_end_matches('/').to_owned()),
-        _ => match config::load() {
-            Ok(cfg) => Ok(cfg.base_url),
-            Err(_) => Ok(config::DEFAULT_BASE_URL.to_owned()),
-        },
+    if created {
+        println!(
+            "  Generated a new key at {}",
+            config::config_path().display()
+        );
     }
+    println!("  This device:  \x1b[1m{address}\x1b[0m");
+    println!("  Relay:        {}", cfg.cloud);
+    if cfg.trust.is_empty() {
+        println!("  Trust:        (empty — every call will be refused)");
+        println!("                run `exe trust <issuer address>` to allow one");
+    } else {
+        println!("  Trust:        {}", cfg.trust.join(", "));
+    }
+    println!();
 }
 
 fn status() -> Result<()> {
-    let path = config::config_path();
     match config::load() {
         Ok(cfg) => {
-            let keys = cfg.keys()?;
-            println!("config        {}", path.display());
-            println!("worker        {}", cfg.base_url);
-            println!("device        {}", cfg.device_id);
-            println!("account       {}", cfg.account_id);
+            println!("config        {}", config::config_path().display());
+            println!("address       {}", cfg.address()?);
+            println!("relay         {}", cfg.cloud);
             println!("label         {}", cfg.label);
-            println!(
-                "sas           {}",
-                exe_core::protocol::sas(&cfg.account_sig_pub, &keys.sig_pub())
-            );
-            println!("device key    {}", keys.sig_pub());
+            if cfg.trust.is_empty() {
+                println!("trust         (empty)");
+            } else {
+                for (index, address) in cfg.trust.iter().enumerate() {
+                    let label = if parse_address(address).is_ok() {
+                        ""
+                    } else {
+                        " (invalid)"
+                    };
+                    println!("trust[{index}]      {address}{label}");
+                }
+            }
             println!("policy        {}", config::policy_path().display());
         }
-        Err(_) => println!("not paired; run `exe run` to obtain a pairing code"),
+        Err(_) => println!("no key yet; run `exe init`"),
     }
     Ok(())
 }
 
-async fn doctor(client: &reqwest::Client) -> Result<()> {
+async fn doctor() -> Result<()> {
     println!("exe {}", env!("CARGO_PKG_VERSION"));
     let cfg = config::load()?;
-    let keys = cfg.keys()?;
-    println!("config        ok ({})", config::config_path().display());
-    println!("device key    {}", keys.sig_pub());
-    let expected = exe_core::protocol::sas(&cfg.account_sig_pub, &keys.sig_pub());
-    println!("sas           {expected} (stored {})", cfg.sas);
-    if expected != cfg.sas {
-        println!("sas           MISMATCH — re-pair this device");
+    let identity = cfg.identity()?;
+    println!("key           ok ({})", config::config_path().display());
+    println!("address       {}", identity.address());
+
+    let broken = cfg.check_trust();
+    if broken.is_empty() {
+        println!("trust         ok ({} entries)", cfg.trust.len());
+    } else {
+        println!("trust         INVALID entries: {broken:?}");
     }
+    if cfg.trust.is_empty() {
+        println!("trust         empty — every call will be refused");
+    }
+
     let policy_path = config::ensure_policy()?;
     let policy = Policy::parse(&std::fs::read_to_string(&policy_path)?)?;
     println!(
@@ -145,23 +172,23 @@ async fn doctor(client: &reqwest::Client) -> Result<()> {
         policy.allow,
         policy.deny
     );
-    let health = client
-        .get(format!("{}/api/health", cfg.base_url))
-        .send()
-        .await;
-    match health {
+    if policy.decide("echo") != PolicyDecision::Allow {
+        bail!("policy denies `echo`; the console cannot verify this device");
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("exe/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    match client.get(format!("{}/api/health", cfg.cloud)).send().await {
         Ok(response) if response.status().is_success() => {
-            println!("worker        reachable ({})", cfg.base_url)
+            println!("relay         reachable ({})", cfg.cloud)
         }
         Ok(response) => println!(
-            "worker        responded {} ({})",
+            "relay         responded {} ({})",
             response.status(),
-            cfg.base_url
+            cfg.cloud
         ),
-        Err(error) => println!("worker        unreachable: {error}"),
-    }
-    if policy.decide("echo") != exe_core::protocol::PolicyDecision::Allow {
-        bail!("policy denies `echo`; the console cannot verify this device");
+        Err(error) => println!("relay         unreachable: {error}"),
     }
     Ok(())
 }

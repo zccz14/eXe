@@ -1,49 +1,46 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use exe_core::{b64u, unb64u, DeviceKeys};
+use exe_core::{parse_address, Identity};
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_BASE_URL: &str = "https://exe.ntnl.io";
+pub const DEFAULT_CLOUD: &str = "https://exe.ntnl.io";
 
+/// The whole device configuration. There is no token and no pairing record:
+/// the secret *is* the identity, and trust is a list a human edits.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
-    pub base_url: String,
-    pub device_id: String,
-    pub account_id: String,
-    pub token: String,
-    pub sig_seed: String,
-    pub kex_seed: String,
-    pub account_sig_pub: String,
-    pub account_kex_pub: String,
-    pub sas: String,
+    /// Relay base URL.
+    pub cloud: String,
+    /// base58(seed32 || pub32). Never leaves this machine.
+    pub secret: String,
+    /// Issuer addresses whose calls this device will run. Anyone can write here;
+    /// only the human at this machine decides who is on the list.
+    #[serde(default)]
+    pub trust: Vec<String>,
+    /// Cosmetic name shown in the console once the address is added there.
+    #[serde(default = "default_label")]
     pub label: String,
-    pub paired_at: u64,
+}
+
+fn default_label() -> String {
+    hostname()
 }
 
 impl Config {
-    pub fn keys(&self) -> Result<DeviceKeys> {
-        let seed: [u8; 32] = hex::decode(&self.sig_seed)
-            .context("sig_seed is not hex")?
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("sig_seed must be 32 bytes"))?;
-        let kex: [u8; 32] = hex::decode(&self.kex_seed)
-            .context("kex_seed is not hex")?
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("kex_seed must be 32 bytes"))?;
-        Ok(DeviceKeys {
-            sig: exe_core::KeyPair::from_seed(seed),
-            kex: exe_core::crypto::KexPair::from_secret(kex),
-        })
+    pub fn identity(&self) -> Result<Identity> {
+        Identity::from_secret(&self.secret).context("secret is not base58(seed32 || pub32)")
     }
-
-    pub fn account_sig_key(&self) -> Result<Vec<u8>> {
-        unb64u(&self.account_sig_pub)
-            .map_err(|_| anyhow::anyhow!("account_sig_pub is not base64url"))
+    pub fn address(&self) -> Result<String> {
+        Ok(self.identity()?.address())
     }
-    pub fn account_kex_key(&self) -> Result<Vec<u8>> {
-        unb64u(&self.account_kex_pub)
-            .map_err(|_| anyhow::anyhow!("account_kex_pub is not base64url"))
+    /// Trust entries are addresses, but a typo should be reported, not silently ignored.
+    pub fn check_trust(&self) -> Vec<String> {
+        self.trust
+            .iter()
+            .filter(|entry| parse_address(entry).is_err())
+            .cloned()
+            .collect()
     }
 }
 
@@ -72,13 +69,32 @@ pub fn policy_path() -> PathBuf {
 
 pub fn load() -> Result<Config> {
     let path = config_path();
-    let text = std::fs::read_to_string(&path).with_context(|| {
-        format!(
-            "no configuration at {}; run `exe run` to pair this device",
-            path.display()
-        )
-    })?;
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("no configuration at {}; run `exe init`", path.display()))?;
     Ok(toml::from_str(&text)?)
+}
+
+/// Generates a key on first use: a device addresses itself, nobody hands it one.
+pub fn load_or_create() -> Result<(Config, bool)> {
+    match load() {
+        Ok(config) => Ok((config, false)),
+        Err(error) if error.downcast_ref::<std::io::Error>().is_some() => {
+            let config = Config {
+                cloud: std::env::var("EXE_CLOUD")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| DEFAULT_CLOUD.to_owned())
+                    .trim_end_matches('/')
+                    .to_owned(),
+                secret: Identity::generate().secret(),
+                trust: Vec::new(),
+                label: hostname(),
+            };
+            save(&config)?;
+            Ok((config, true))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn save(config: &Config) -> Result<()> {
@@ -123,15 +139,4 @@ pub fn hostname() -> String {
 
 pub fn platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
-}
-
-pub fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|value| value.as_secs())
-        .unwrap_or(0)
-}
-
-pub fn new_secret() -> String {
-    b64u(&exe_core::crypto::random_bytes::<32>())
 }
