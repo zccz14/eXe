@@ -2,8 +2,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::{
-    b58, parse_address, push_lp, push_u64, seal, unb64u, unix_now, verify, CryptoError,
-    Identity, SealContext,
+    b58, parse_address, push_lp, push_u64, seal, unb64u, unix_now, verify, CryptoError, Identity,
+    SealContext,
 };
 
 /// What the device finds inside a sealed command.
