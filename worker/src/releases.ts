@@ -1,27 +1,42 @@
-// Client binaries are published as GitHub Release assets. The relay resolves the
-// latest release and can proxy the download, so the console never has to send a
-// user to GitHub with a personal token. See docs/DEPLOY.md.
+// Client binaries are published as GitHub Release assets. The relay reads them
+// without any credential and without the GitHub API:
+//
+//   1. `GET https://github.com/<repo>/releases/latest` answers 302 with the tag.
+//   2. `GET https://github.com/<repo>/releases/download/<tag>/manifest.json`
+//      lists the files (published by the release workflow).
+//
+// The GitHub API is not used: unauthenticated API calls are limited to 60/hour
+// per IP, and a Worker shares its egress IPs with everyone else on Cloudflare.
 import type { Env } from "./db.ts";
 import { ApiError, json } from "./http.ts";
 
-const CACHE_MS = 5 * 60 * 1000;
+const CACHE_MS = 10 * 60 * 1000;
 const ASSET_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 
-interface GitHubAsset {
+interface ReleaseFile {
   name: string;
   size: number;
-  url: string;
-  browser_download_url: string;
+  sha256?: string;
 }
 
-interface GitHubRelease {
-  tag_name: string;
-  published_at: string;
-  html_url: string;
-  assets: GitHubAsset[];
+interface ReleaseManifest {
+  version: string;
+  tag: string;
+  built_at?: string;
+  files: ReleaseFile[];
 }
 
-let cache: { repo: string; expiresAt: number; release: GitHubRelease | null } | null = null;
+interface Resolved {
+  tag: string;
+  manifest: ReleaseManifest;
+}
+
+interface CacheEntry extends Resolved {
+  repo: string;
+  expiresAt: number;
+}
+
+let cache: CacheEntry | null = null;
 
 export function repository(env: Env): string {
   return (env.GITHUB_REPO ?? "zccz14/eXe").trim();
@@ -31,37 +46,49 @@ function releasePage(env: Env): string {
   return `https://github.com/${repository(env)}/releases/latest`;
 }
 
-async function latestRelease(env: Env, force = false): Promise<GitHubRelease | null> {
-  const repo = repository(env);
-  // A private repository needs a token; without one the console falls back to the
-  // GitHub release page instead of pretending the download works.
-  if (!env.GITHUB_RELEASES_TOKEN) return null;
-  if (!force && cache && cache.repo === repo && cache.expiresAt > Date.now()) return cache.release;
-
-  const response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-    headers: {
-      authorization: `Bearer ${env.GITHUB_RELEASES_TOKEN}`,
-      accept: "application/vnd.github+json",
-      "x-github-api-version": "2022-11-28",
-      "user-agent": "exe-relay",
-    },
+async function resolveTag(env: Env): Promise<string | null> {
+  const response = await fetch(`https://github.com/${repository(env)}/releases/latest`, {
+    redirect: "manual",
+    headers: { "user-agent": "exe-relay" },
   });
-  if (response.status === 404) {
-    cache = { repo, expiresAt: Date.now() + CACHE_MS, release: null };
-    return null;
+  const location = response.headers.get("location") ?? "";
+  const match = /\/releases\/tag\/([^/?#]+)$/.exec(location);
+  return match ? decodeURIComponent(match[1]!) : null;
+}
+
+async function resolveManifest(env: Env, tag: string): Promise<ReleaseManifest | null> {
+  const response = await fetch(`https://github.com/${repository(env)}/releases/download/${tag}/manifest.json`, {
+    headers: { "user-agent": "exe-relay" },
+  });
+  if (!response.ok) return null;
+  const manifest = (await response.json()) as ReleaseManifest;
+  if (!Array.isArray(manifest.files) || typeof manifest.tag !== "string") return null;
+  return manifest;
+}
+
+async function latestRelease(env: Env): Promise<Resolved | null> {
+  const repo = repository(env);
+  if (!repo) return null;
+  if (cache && cache.repo === repo && cache.expiresAt > Date.now()) return cache;
+  try {
+    const tag = await resolveTag(env);
+    if (!tag) return null;
+    const manifest = await resolveManifest(env, tag);
+    if (!manifest) return null;
+    cache = { repo, expiresAt: Date.now() + CACHE_MS, tag, manifest };
+    return cache;
+  } catch {
+    // GitHub unreachable: keep serving the last answer we had, if any.
+    return cache && cache.repo === repo ? cache : null;
   }
-  if (!response.ok) throw new ApiError(503, `github releases responded ${response.status}`);
-  const release = (await response.json()) as GitHubRelease;
-  cache = { repo, expiresAt: Date.now() + CACHE_MS, release };
-  return release;
 }
 
 /** GET /api/releases/latest — what the console renders. */
 export async function latest(env: Env): Promise<Response> {
-  const release = await latestRelease(env);
-  if (!release) {
+  const resolved = await latestRelease(env);
+  if (!resolved) {
     return json({
-      configured: Boolean(env.GITHUB_RELEASES_TOKEN),
+      configured: false,
       repository: repository(env),
       version: null,
       tag: null,
@@ -70,49 +97,33 @@ export async function latest(env: Env): Promise<Response> {
       assets: [],
     });
   }
+  const { tag, manifest } = resolved;
   return json({
     configured: true,
     repository: repository(env),
-    version: release.tag_name.replace(/^v/, ""),
-    tag: release.tag_name,
-    published_at: release.published_at,
-    release_url: release.html_url,
-    assets: release.assets.map((asset) => ({
-      name: asset.name,
-      size: asset.size,
-      url: `/download/${encodeURIComponent(asset.name)}`,
+    version: manifest.version || tag.replace(/^v/, ""),
+    tag,
+    published_at: manifest.built_at ?? null,
+    release_url: `https://github.com/${repository(env)}/releases/tag/${tag}`,
+    assets: manifest.files.map((file) => ({
+      name: file.name,
+      size: file.size,
+      url: `/download/${encodeURIComponent(file.name)}`,
     })),
   });
 }
 
-/** GET /download/{asset} — redirect to the signed asset URL, or stream it through. */
+/** GET /download/{asset} — only files the release manifest lists are served. */
 export async function download(env: Env, name: string): Promise<Response> {
   if (!ASSET_NAME.test(name)) throw new ApiError(400, "bad asset name");
-  const release = await latestRelease(env);
-  if (!release) throw new ApiError(404, "no release has been published");
-  const asset = release.assets.find((item) => item.name === name);
-  if (!asset) throw new ApiError(404, "unknown asset");
-
-  const response = await fetch(asset.url, {
+  const resolved = await latestRelease(env);
+  if (!resolved) throw new ApiError(404, "no release has been published");
+  if (!resolved.manifest.files.some((file) => file.name === name)) throw new ApiError(404, "unknown asset");
+  return new Response(null, {
+    status: 302,
     headers: {
-      authorization: `Bearer ${env.GITHUB_RELEASES_TOKEN}`,
-      accept: "application/octet-stream",
-      "user-agent": "exe-relay",
+      location: `https://github.com/${repository(env)}/releases/download/${resolved.tag}/${encodeURIComponent(name)}`,
+      "cache-control": "no-store",
     },
-    redirect: "manual",
   });
-  const location = response.headers.get("location");
-  if (location) {
-    // The signed CDN URL is short-lived and does not need our token.
-    return new Response(null, { status: 302, headers: { location, "cache-control": "no-store" } });
-  }
-  if (!response.ok || !response.body) throw new ApiError(502, "github did not return the asset");
-  const headers = new Headers({
-    "content-type": response.headers.get("content-type") ?? "application/octet-stream",
-    "content-disposition": `attachment; filename="${name}"`,
-    "cache-control": "public, max-age=300",
-  });
-  const length = response.headers.get("content-length");
-  if (length) headers.set("content-length", length);
-  return new Response(response.body, { status: 200, headers });
 }

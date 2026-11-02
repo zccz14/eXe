@@ -77,10 +77,12 @@ async function main() {
 async function run() {
   // --- client binaries come from the latest GitHub Release -----------------
   const releases = await fetch(`${base}/api/releases/latest`).then((r) => r.json());
-  assert.equal(releases.configured, false, "no GitHub token is configured in tests");
-  assert.deepEqual(releases.assets, []);
-  assert.match(releases.release_url, /github\.com\/zccz14\/eXe\/releases\/latest/);
-  assert.equal((await fetch(`${base}/download/exe-aarch64-apple-darwin.tar.gz`)).status, 404, "nothing to download without a release");
+  assert.equal(typeof releases.configured, "boolean", "release resolution degrades instead of failing");
+  assert.ok(Array.isArray(releases.assets));
+  assert.match(releases.release_url, /github\.com\/zccz14\/eXe\/releases/);
+  if (!releases.configured) assert.deepEqual(releases.assets, [], "no metadata means no assets");
+  const unknownAsset = await fetch(`${base}/download/definitely-not-an-asset`);
+  assert.equal(unknownAsset.status, 404, "only assets of the latest release are downloadable");
 
   // --- the browser owns the only account key ------------------------------
   const userId = randomUUID();
