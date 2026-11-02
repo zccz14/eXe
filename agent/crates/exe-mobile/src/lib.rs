@@ -52,7 +52,10 @@ pub(crate) fn run_inner(dir: PathBuf, base_url: String) -> i32 {
         }
     };
     runtime.block_on(async {
-        let client = match reqwest::Client::builder().user_agent(concat!("exe-mobile/", env!("CARGO_PKG_VERSION"))).build() {
+        let client = match reqwest::Client::builder()
+            .user_agent(concat!("exe-mobile/", env!("CARGO_PKG_VERSION")))
+            .build()
+        {
             Ok(client) => client,
             Err(error) => {
                 tracing::error!(%error, "could not build the HTTP client");
@@ -64,7 +67,8 @@ pub(crate) fn run_inner(dir: PathBuf, base_url: String) -> i32 {
             Err(_) => {
                 let announced = dir.clone();
                 match pair::pair(&client, base_url.trim_end_matches('/'), |code, uri| {
-                    let _ = std::fs::write(announced.join("pairing.txt"), format!("{code}\n{uri}\n"));
+                    let _ =
+                        std::fs::write(announced.join("pairing.txt"), format!("{code}\n{uri}\n"));
                 })
                 .await
                 {
@@ -98,7 +102,9 @@ pub unsafe extern "C" fn exe_agent_run(config_dir: *const c_char, base_url: *con
         return 2;
     };
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
         .with_target(false)
         .init();
     run_inner(PathBuf::from(config_dir), base_url)
@@ -119,7 +125,10 @@ mod android {
         base_url: JString<'local>,
     ) -> jint {
         tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "info".into()),
+            )
             .with_target(false)
             .init();
         let dir: String = match env.get_string(&config_dir) {
