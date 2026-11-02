@@ -6,11 +6,26 @@ v2 把三件事一起收敛：**一把密钥、一种密封、没有配对**。
 ## 1. 身份：一把 Ed25519，既是签名密钥也是地址
 
 - 每个端（人 / Agent / 设备）只有一对 Ed25519 密钥。
-- **公钥就是地址**：base58 编码的 32 字节，和 ZeroChannel 一致。
+- **公钥就是地址**：`base58(32 字节)`，与 ZeroChannel、Solana 同一套编码。
 - 加密用的 X25519 由同一把密钥派生：
   - 公钥：Edwards → Montgomery（`edwardsToMontgomeryPub` / `crypto_sign_ed25519_pk_to_curve25519`）
   - 私钥：`SHA-512(seed)[0..32]` 裁剪（`crypto_sign_ed25519_sk_to_curve25519` 同款）
 - 签名仍用原始 Ed25519。**云端只存地址（公钥），永远拿不到私钥。**
+
+### 编码（全链路统一）
+
+| 东西 | 编码 | 长度 |
+|---|---|---|
+| 公钥 / 地址 / `issuer` / `device` | `base58(pub32)` | 通常 43–44 字符 |
+| **私钥（拓展格式）** | `base58(seed32 ‖ pub32)` | 通常 87–88 字符，Solana 的 `Keypair.secretKey` 同款 |
+| 签名 | `base58(sig64)` | 同上风格，不混用 base64url |
+| 密文 / nonce / ephemeral 公钥 | `base58` | 与 ZeroChannel 一致 |
+
+- 私钥文件里存的是**拓展格式**：`[seed(32) ‖ pub(32)]`，加载时先校验后 32 字节确实等于
+  由 seed 推出的公钥，不一致直接拒绝——和 `auth-mini/sdk/device` 的做法一致。
+- 好处：eXe 的端侧身份与 AuthMini 的设备身份、Solana 的密钥文件格式互通，
+  同一把密钥可以在这三处复用，不需要转换格式。
+- 目录/文件名使用短地址（前 8 位）仅供显示，路由与校验一律用完整 base58。
 
 ## 2. 密封：crypto_box 裹密钥 + AES-GCM 装正文
 
