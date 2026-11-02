@@ -39,7 +39,6 @@ export function makeBrowser() {
     identity,
     address,
     request,
-    addDevice: (base, deviceAddress, label) => request(base, "POST", "/api/devices", { address: deviceAddress, label }),
     signCall(deviceAddress, name, args, ttl = 300) {
       const issuedAt = now();
       return buildCall({

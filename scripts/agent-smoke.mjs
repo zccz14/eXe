@@ -60,9 +60,9 @@ async function main() {
     const deviceAddress = addressOf(decodeSecret(secret));
     assert.ok(init.stdout.includes(deviceAddress), "exe init prints the address");
 
-    // The console adds that address and hands its own address back to the device.
+    // The console types that address into its own browser-side book and hands its
+    // own address back to the device: trust is built in two places, both local.
     const browser = makeBrowser();
-    await browser.addDevice(base, deviceAddress, "smoke");
     const trust = spawnSync("./agent/target/debug/exe", ["trust", browser.address], { env: agentEnv(), encoding: "utf8" });
     assert.equal(trust.status, 0, trust.stderr);
 
@@ -74,15 +74,14 @@ async function main() {
     assert.ok(agentLog.includes("subscribed"), `the agent subscribed to the stream\n${agentLog}`);
     assert.ok(agentLog.includes(deviceAddress), "the agent logs its own address");
 
-    const devices = await browser.request(base, "GET", "/api/devices");
-    assert.equal(devices.devices.length, 1);
-    assert.equal(devices.devices[0].address, deviceAddress);
-    for (let attempt = 0; attempt < 40 && !devices.devices[0]?.online; attempt += 1) await wait(250);
+    const seen = () => browser.request(base, "GET", `/api/devices/${deviceAddress}`);
+    for (let attempt = 0; attempt < 40 && !(await seen()).online; attempt += 1) await wait(250);
     // The relay learns hostname/platform/version from the device's own signed
     // registration, so no `sysinfo` verb is needed to display them.
-    const listed = await browser.request(base, "GET", "/api/devices");
-    assert.equal(listed.devices[0].hostname, "smoke-host");
-    assert.equal(listed.devices[0].online, true);
+    const listed = await seen();
+    assert.equal(listed.registered, true);
+    assert.equal(listed.hostname, "smoke-host");
+    assert.equal(listed.online, true);
 
     const settle = async (callId) => {
       for (let attempt = 0; attempt < 60; attempt += 1) {
