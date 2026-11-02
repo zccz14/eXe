@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckIcon, ChevronRightIcon, CopyIcon, FingerprintIcon, PlusIcon, TerminalIcon } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { api, type DeviceStatus, type Me } from "../api";
 import { bookList, bookPut, looksLikeAddress, type BookEntry } from "../book";
 import { DownloadCard } from "../components/DownloadCard";
@@ -57,7 +57,6 @@ function ConsoleAddressCard() {
 /** The label comes from this browser; the online state comes from the relay, per address. */
 function DeviceCard({ entry }: { entry: BookEntry }) {
   const t = useCopy();
-  const navigate = useNavigate();
   const status = useQuery({
     queryKey: ["device", entry.address],
     queryFn: () => api<DeviceStatus>(`/api/devices/${entry.address}`),
@@ -66,23 +65,22 @@ function DeviceCard({ entry }: { entry: BookEntry }) {
   const device = status.data;
 
   return (
-    <Card
-      className="cursor-pointer space-y-3 transition hover:border-foreground/30"
-      {...{ onClick: () => navigate(`/devices/${entry.address}`) }}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate font-medium">{entry.label}</div>
-          <div className="truncate font-mono text-xs text-muted-foreground">{entry.address}</div>
+    <Link to={`/devices/${entry.address}`} className="block">
+      <Card className="space-y-3 transition hover:border-foreground/30">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="truncate font-medium">{entry.label}</div>
+            <div className="truncate font-mono text-xs text-muted-foreground">{entry.address}</div>
+          </div>
+          <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" />
         </div>
-        <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" />
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        {device?.online ? <Badge tone="ok">{t("online")}</Badge> : <Badge tone="muted">{t("offline")}</Badge>}
-        {device?.platform && <Badge>{device.platform}</Badge>}
-      </div>
-      <Stat label={t("last_seen")} value={device?.last_seen_at ? new Date(device.last_seen_at * 1000).toLocaleString() : "—"} />
-    </Card>
+        <div className="flex flex-wrap items-center gap-2">
+          {device?.online ? <Badge tone="ok">{t("online")}</Badge> : <Badge tone="muted">{t("offline")}</Badge>}
+          {device?.platform && <Badge>{device.platform}</Badge>}
+        </div>
+        <Stat label={t("last_seen")} value={device?.last_seen_at ? new Date(device.last_seen_at * 1000).toLocaleString() : "—"} />
+      </Card>
+    </Link>
   );
 }
 
