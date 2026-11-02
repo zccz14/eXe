@@ -4,14 +4,23 @@ use anyhow::{Context, Result};
 use exe_core::{parse_address, Identity};
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_CLOUD: &str = "https://exe.ntnl.io";
+/// Where a fresh device looks for the relay, in preference order. Both reach the
+/// same relay by different routes; no signature covers the hostname, so a device
+/// may use any of them and its identity is unchanged.
+pub const DEFAULT_ENDPOINTS: [&str; 2] = ["https://exe.ntnl.io", "https://exe.ntnl.top"];
 
 /// The whole device configuration. There is no token and no pairing record:
 /// the secret *is* the identity, and trust is a list a human edits.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
-    /// Relay base URL.
-    pub cloud: String,
+    /// Relay endpoints, in preference order. They must all reach the same relay:
+    /// a call delivered through one is settled through another.
+    #[serde(default)]
+    pub endpoints: Vec<String>,
+    /// Older configurations carried a single `cloud`. Still read, never written,
+    /// so a device that upgrades keeps working without editing its file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud: Option<String>,
     /// base58(seed32 || pub32). Never leaves this machine.
     pub secret: String,
     /// Issuer addresses whose calls this device will run. Anyone can write here;
@@ -20,7 +29,36 @@ pub struct Config {
     pub trust: Vec<String>,
 }
 
+/// A base URL per entry, trimmed: a trailing slash would double up in a join.
+pub fn split_endpoints(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|entry| entry.trim().trim_end_matches('/').to_owned())
+        .filter(|entry| !entry.is_empty())
+        .collect()
+}
+
 impl Config {
+    /// Every endpoint this device may use, in preference order. Old files with a
+    /// single `cloud`, and files with nothing at all, both end up here.
+    pub fn endpoints(&self) -> Vec<String> {
+        let configured: Vec<String> = self
+            .endpoints
+            .iter()
+            .flat_map(|entry| split_endpoints(entry))
+            .collect();
+        if !configured.is_empty() {
+            return configured;
+        }
+        if let Some(cloud) = &self.cloud {
+            let legacy = split_endpoints(cloud);
+            if !legacy.is_empty() {
+                return legacy;
+            }
+        }
+        split_endpoints(&DEFAULT_ENDPOINTS.join(","))
+    }
+
     pub fn identity(&self) -> Result<Identity> {
         Identity::from_secret(&self.secret).context("secret is not base58(seed32 || pub32)")
     }
@@ -68,13 +106,14 @@ pub fn load_or_create() -> Result<(Config, bool)> {
     match load() {
         Ok(config) => Ok((config, false)),
         Err(error) if error.downcast_ref::<std::io::Error>().is_some() => {
+            let endpoints = std::env::var("EXE_CLOUD")
+                .ok()
+                .map(|value| split_endpoints(&value))
+                .filter(|listed| !listed.is_empty())
+                .unwrap_or_else(|| split_endpoints(&DEFAULT_ENDPOINTS.join(",")));
             let config = Config {
-                cloud: std::env::var("EXE_CLOUD")
-                    .ok()
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| DEFAULT_CLOUD.to_owned())
-                    .trim_end_matches('/')
-                    .to_owned(),
+                endpoints,
+                cloud: None,
                 secret: Identity::generate().secret(),
                 trust: Vec::new(),
             };
@@ -101,4 +140,45 @@ pub fn save(config: &Config) -> Result<()> {
 
 pub fn platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(text: &str) -> Config {
+        toml::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn a_config_may_name_one_endpoint_or_many() {
+        let single = parse("secret = \"s\"\ncloud = \"https://example.test/\"\n");
+        assert_eq!(single.endpoints(), vec!["https://example.test"]);
+
+        let many = parse("secret = \"s\"\nendpoints = [\"https://a.test\", \"https://b.test/\"]\n");
+        assert_eq!(
+            many.endpoints(),
+            vec!["https://a.test", "https://b.test"],
+            "order is preference, and a trailing slash is trimmed"
+        );
+
+        let empty = parse("secret = \"s\"\n");
+        assert_eq!(
+            empty.endpoints(),
+            split_endpoints(&DEFAULT_ENDPOINTS.join(","))
+        );
+    }
+
+    #[test]
+    fn a_new_config_writes_endpoints_and_never_cloud() {
+        let config = Config {
+            endpoints: split_endpoints(&DEFAULT_ENDPOINTS.join(",")),
+            cloud: None,
+            secret: "s".into(),
+            trust: Vec::new(),
+        };
+        let text = toml::to_string_pretty(&config).unwrap();
+        assert!(text.contains("endpoints = ["));
+        assert!(!text.contains("cloud"), "the legacy key is read-only");
+    }
 }

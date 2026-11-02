@@ -38,13 +38,17 @@ x25519_priv = clamp(sha512(seed)[0..32])
 信任写在设备配置里，不经过云端：
 
 ```toml
-cloud   = "https://exe.ntnl.io"
-secret  = "<base58(seed32 ‖ pub32)>"
-trust   = ["<签发者地址>", …]      # 只接受这些地址签发的指令
+endpoints = ["https://exe.ntnl.io", "https://exe.ntnl.top"]   # 同一个中继的不同入口
+secret    = "<base58(seed32 ‖ pub32)>"
+trust     = ["<签发者地址>", …]      # 只接受这些地址签发的指令
 ```
 
 - `secret` 是设备唯一的身份材料，第一次运行 `exe run` 时本机生成，从不外传；
   `exe trust <地址>` 编辑信任列表，重启后生效。
+- `endpoints` 是通向**同一个中继**的多个入口，按偏好排序。设备启动时并发探测每个入口的
+  `/api/health`，选最快、且确实回答 `service: "exe"` 的那个；当前入口连不上时重新探测。
+  请求签名只覆盖 `method ‖ path ‖ address`，不含主机名——所以换入口不改变任何已经成立的事实。
+  旧配置里的单个 `cloud` 仍然被读取，不会被重写。
 - 设备启动时用自己的密钥向云端**自登记**：一次自签请求，带上 `platform` /
   `version` / `trust` / `run_id`。云端记下这些，只是为了少发：`trust` 是设备自己写的那份
   列表的**副本**，它只能用来把设备本来就会拒绝的调用挡在门外。副本在注册时刷新，

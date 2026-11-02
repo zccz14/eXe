@@ -13,7 +13,9 @@ import { addressOf, decodeSecret, openAttachment } from "../shared/protocol.ts";
 const PORT = 8787;
 const base = `http://127.0.0.1:${PORT}`;
 const configDir = mkdtempSync(join(tmpdir(), "exe-smoke-"));
-const clientEnv = () => ({ ...process.env, EXE_CONFIG_DIR: configDir, EXE_CLOUD: base, RUST_LOG: "info" });
+/** The first endpoint is a closed port: the client must probe and pick the second. */
+const DEAD_ENDPOINT = "http://127.0.0.1:1";
+const clientEnv = () => ({ ...process.env, EXE_CONFIG_DIR: configDir, EXE_CLOUD: `${DEAD_ENDPOINT},${base}`, RUST_LOG: "info" });
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -72,6 +74,9 @@ async function main() {
 
     for (let attempt = 0; attempt < 120 && !clientLog.includes("subscribed"); attempt += 1) await wait(250);
     assert.ok(clientLog.includes("subscribed"), `the client subscribed to the stream\n${clientLog}`);
+    const chosen = /chose the fastest relay endpoint[^\n]*?(https?:\/\/[^"\s]+)/.exec(clientLog);
+    assert.ok(chosen, `the client probes before it connects\n${clientLog}`);
+    assert.equal(chosen[1], base, "the reachable endpoint wins over the dead one");
     assert.ok(clientLog.includes(deviceAddress), "the client logs its own address");
 
     const seen = () => browser.request(base, "GET", `/api/devices/${deviceAddress}`);

@@ -99,7 +99,7 @@ fn announce(cfg: &config::Config, created: bool) {
         );
     }
     println!("  This device:  \x1b[1m{address}\x1b[0m");
-    println!("  Relay:        {}", cfg.cloud);
+    println!("  Relay:        {}", cfg.endpoints().join(", "));
     if cfg.trust.is_empty() {
         println!("  Trust:        (empty — every call will be refused)");
         println!("                run `exe trust <issuer address>` to allow one");
@@ -114,7 +114,7 @@ fn status() -> Result<()> {
         Ok(cfg) => {
             println!("config        {}", config::config_path().display());
             println!("address       {}", cfg.address()?);
-            println!("relay         {}", cfg.cloud);
+            println!("endpoints     {}", cfg.endpoints().join(", "));
             if cfg.trust.is_empty() {
                 println!("trust         (empty)");
             } else {
@@ -153,16 +153,21 @@ async fn doctor() -> Result<()> {
     let client = reqwest::Client::builder()
         .user_agent(concat!("exe/", env!("CARGO_PKG_VERSION")))
         .build()?;
-    match client.get(format!("{}/api/health", cfg.cloud)).send().await {
-        Ok(response) if response.status().is_success() => {
-            println!("relay         reachable ({})", cfg.cloud)
+    for endpoint in cfg.endpoints() {
+        let started = std::time::Instant::now();
+        match client
+            .get(format!("{endpoint}/api/health"))
+            .timeout(std::time::Duration::from_secs(3))
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => println!(
+                "endpoint      {endpoint} ok ({} ms)",
+                started.elapsed().as_millis()
+            ),
+            Ok(response) => println!("endpoint      {endpoint} responded {}", response.status()),
+            Err(error) => println!("endpoint      {endpoint} unreachable: {error}"),
         }
-        Ok(response) => println!(
-            "relay         responded {} ({})",
-            response.status(),
-            cfg.cloud
-        ),
-        Err(error) => println!("relay         unreachable: {error}"),
     }
     Ok(())
 }

@@ -116,40 +116,100 @@ pub async fn run(config: Config) -> Result<()> {
     if config.trust.is_empty() {
         warn!("trust is empty: this device will refuse every call until `exe trust <address>` names an issuer");
     }
+    let endpoints = config.endpoints();
     info!(
         address = identity.address().as_str(),
-        cloud = config.cloud.as_str(),
+        endpoints = ?endpoints,
         trust = ?config.trust,
         "eXe client starting"
     );
 
-    let client = Client {
-        client: reqwest::Client::builder()
-            .user_agent(concat!("exe/", env!("CARGO_PKG_VERSION")))
-            .build()?,
-        cloud: config.cloud.clone(),
-        identity,
-        trust: config.trust.clone(),
-        run_id: uuid::Uuid::now_v7().to_string(),
-        tasks: Arc::default(),
-        results: Arc::default(),
-    };
+    let http = reqwest::Client::builder()
+        .user_agent(concat!("exe/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let run_id = uuid::Uuid::now_v7().to_string();
+    let tasks: Tasks = Arc::default();
+    let results: Arc<Mutex<ResultCache>> = Arc::default();
 
     let mut backoff = 1u64;
+    // `None` means "pick an endpoint again": at startup, and after anything that
+    // looks like the route rather than the request being the problem.
+    let mut current: Option<String> = None;
     loop {
-        match client.register().await {
-            Ok(()) => {}
-            Err(error) => warn!(%error, "self-registration failed; will retry"),
+        if current.is_none() {
+            current = probe(&http, &endpoints).await;
+            match current.as_deref() {
+                Some(base) => info!(endpoint = base, "chose the fastest relay endpoint"),
+                None => warn!("no relay endpoint answered; will keep trying"),
+            }
         }
-        match client.listen().await {
-            Ok(()) => backoff = 1,
-            Err(error) => {
-                warn!(%error, "event stream ended; reconnecting");
-                backoff = (backoff * 2).min(30);
+        let Some(cloud) = current.clone() else {
+            tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+            backoff = (backoff * 2).min(30);
+            continue;
+        };
+        let client = Client {
+            client: http.clone(),
+            cloud,
+            identity: identity.clone(),
+            trust: config.trust.clone(),
+            run_id: run_id.clone(),
+            tasks: tasks.clone(),
+            results: results.clone(),
+        };
+        if let Err(error) = client.register().await {
+            warn!(%error, "self-registration failed; will retry");
+            current = None;
+            backoff = (backoff * 2).min(30);
+        } else {
+            match client.listen().await {
+                // The relay closes a stream on purpose after fifteen minutes;
+                // that is a normal cycle, not a reason to change endpoints.
+                Ok(()) => backoff = 1,
+                Err(error) => {
+                    warn!(%error, "event stream ended; reconnecting");
+                    backoff = (backoff * 2).min(30);
+                    current = None;
+                }
             }
         }
         tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
     }
+}
+
+/// Probes every endpoint at once and keeps the quickest one that is really an
+/// eXe relay. A captive portal that answers 200 with HTML is not an endpoint.
+async fn probe(http: &reqwest::Client, endpoints: &[String]) -> Option<String> {
+    let attempts = endpoints.iter().map(|base| async move {
+        let started = std::time::Instant::now();
+        let response = http
+            .get(format!("{base}/api/health"))
+            .timeout(std::time::Duration::from_secs(3))
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let healthy = response
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("service")
+                    .and_then(|value| value.as_str())
+                    .map(|service| service == "exe")
+            })
+            .unwrap_or(false);
+        healthy.then(|| (started.elapsed(), base.clone()))
+    });
+    futures_util::future::join_all(attempts)
+        .await
+        .into_iter()
+        .flatten()
+        .min_by_key(|(elapsed, _)| *elapsed)
+        .map(|(_, base)| base)
 }
 
 fn signed(
