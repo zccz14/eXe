@@ -3,12 +3,15 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useAuthMini } from "auth-mini-react-components";
 import { ShieldCheckIcon } from "lucide-react";
 import { api, type PairingView } from "../api";
+import { useAccount } from "../account";
+import { signPairingApproval } from "../keystore";
 import { useCopy } from "../i18n";
 import { Badge, Button, Card, Input, Stat } from "../ui";
 
 export function PairPage() {
   const t = useCopy();
   const { sdk } = useAuthMini();
+  const { account, state } = useAccount();
   const [code, setCode] = useState("");
   const [submitted, setSubmitted] = useState("");
   const [label, setLabel] = useState("");
@@ -23,11 +26,22 @@ export function PairPage() {
   });
 
   const approve = useMutation({
-    mutationFn: (deviceLabel: string) =>
-      api<{ sas: string }>(sdk as never, `/api/pairings/${encodeURIComponent(submitted)}`, {
+    mutationFn: async (deviceLabel: string) => {
+      if (!account?.account_id || !pairing.data) throw new Error(t("account_missing"));
+      const row = pairing.data;
+      const signed = await signPairingApproval({
+        pairingId: row.pairing_id,
+        deviceId: row.device_id,
+        accountId: account.account_id,
+        deviceSigPub: row.device_sig_pub,
+        deviceKexPub: row.device_kex_pub,
+        issuedAt: Math.floor(Date.now() / 1000),
+      });
+      return api<{ sas: string }>(sdk as never, `/api/pairings/${encodeURIComponent(submitted)}`, {
         method: "POST",
-        body: JSON.stringify({ label: deviceLabel || undefined }),
-      }),
+        body: JSON.stringify({ label: deviceLabel || undefined, ...signed }),
+      });
+    },
     onSuccess: () => setNotice(t("pair_approved")),
     onError: (error: Error) => setNotice(error.message),
   });
@@ -86,7 +100,7 @@ export function PairPage() {
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
             <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t("label_device")} />
-            <Button onClick={() => approve.mutate(label)} disabled={data.status !== "pending" || approve.isPending}>
+            <Button onClick={() => approve.mutate(label)} disabled={data.status !== "pending" || approve.isPending || state !== "ready"}>
               {t("approve")}
             </Button>
             <Button variant="outline" onClick={() => deny.mutate()} disabled={data.status !== "pending" || deny.isPending}>

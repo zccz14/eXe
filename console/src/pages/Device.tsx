@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuthMini } from "auth-mini-react-components";
 import { ArrowLeftIcon, PlayIcon, ShieldAlertIcon, SquareIcon, Trash2Icon } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { api, type CallDetail, type CallView, type DeviceView } from "../api";
+import { useAccount } from "../account";
+import { newCallId, newNonce, openSealed, signDeviceCall } from "../keystore";
 import { statusCopy, useCopy } from "../i18n";
 import { Badge, Button, Card, Input, Stat } from "../ui";
 
@@ -27,6 +29,7 @@ export function DevicePage() {
   const t = useCopy();
   const { id = "" } = useParams();
   const { sdk } = useAuthMini();
+  const { account, state: keyState } = useAccount();
   const queryClient = useQueryClient();
   const [tool, setTool] = useState<ToolName>("echo");
   const [argsText, setArgsText] = useState<string>('{"text":"hello eXe"}');
@@ -46,6 +49,7 @@ export function DevicePage() {
     refetchInterval: 2000,
   });
 
+  const [plaintext, setPlaintext] = useState<unknown>(null);
   const detail = useQuery({
     queryKey: ["call", openCall],
     queryFn: () => api<CallDetail>(sdk as never, `/api/calls/${openCall}`),
@@ -53,17 +57,47 @@ export function DevicePage() {
     refetchInterval: (query) => (query.state.data?.call.has_result ? false : 2000),
   });
 
+  useEffect(() => {
+    const envelope = detail.data?.envelope;
+    setPlaintext(null);
+    if (!envelope || !detail.data) return;
+    let cancelled = false;
+    openSealed(detail.data.call.id, detail.data.call.device_id, envelope)
+      .then((value) => {
+        if (!cancelled) setPlaintext(value);
+      })
+      .catch((error: Error) => {
+        if (!cancelled) setPlaintext({ ok: false, error: error.message });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail.data]);
+
   const send = useMutation({
     mutationFn: async () => {
-      let args: unknown;
+      if (keyState !== "ready" || !account?.account_id) throw new Error(t("account_missing"));
+      let parsed: unknown;
       try {
-        args = JSON.parse(argsText);
+        parsed = JSON.parse(argsText);
       } catch {
         throw new Error("arguments must be valid JSON");
       }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("arguments must be a JSON object");
+      const issuedAt = Math.floor(Date.now() / 1000);
+      const signed = await signDeviceCall({
+        callId: newCallId(),
+        deviceId: id,
+        accountId: account.account_id,
+        name: tool,
+        args: JSON.stringify(parsed),
+        nonce: newNonce(),
+        issuedAt,
+        expiresAt: issuedAt + 300,
+      });
       return api<{ call: CallView }>(sdk as never, `/api/devices/${id}/calls`, {
         method: "POST",
-        body: JSON.stringify({ name: tool, args }),
+        body: JSON.stringify(signed),
       });
     },
     onSuccess: () => {
@@ -146,7 +180,7 @@ export function DevicePage() {
             <ShieldAlertIcon className="size-3.5" />
             {t("policy_note")}
           </p>
-          <Button onClick={() => send.mutate()} disabled={send.isPending || device.status === "revoked"}>
+          <Button onClick={() => send.mutate()} disabled={send.isPending || device.status === "revoked" || keyState !== "ready"}>
             <PlayIcon className="size-4" />
             {t("run")}
           </Button>
@@ -180,9 +214,7 @@ export function DevicePage() {
                 <div className="space-y-2 rounded-lg bg-muted/50 p-3 text-xs">
                   <div className="font-mono break-all">{call.args}</div>
                   {detail.isLoading && <div className="text-muted-foreground">…</div>}
-                  {detail.data?.result !== null && detail.data?.result !== undefined && (
-                    <pre className="overflow-x-auto font-mono text-xs">{JSON.stringify(detail.data.result, null, 2)}</pre>
-                  )}
+                  {plaintext !== null && <pre className="overflow-x-auto font-mono text-xs">{JSON.stringify(plaintext, null, 2)}</pre>}
                   {call.failure_code && <div className="text-destructive">{call.failure_code}</div>}
                 </div>
               )}

@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -7,12 +7,20 @@ import { LinkitProvider } from "linkit-react-components";
 import { AppLayout } from "@zccz14/ux";
 import { KeyRoundIcon, LanguagesIcon, MonitorIcon } from "lucide-react";
 import "./styles.css";
+import { AccountProvider, holdsAccountKey, useAccount } from "./account";
 import { LanguageProvider, useCopy, useLang } from "./i18n";
 import { ExeMark } from "./mark";
 import { DevicePage } from "./pages/Device";
 import { DevicesPage } from "./pages/Devices";
 import { PairPage } from "./pages/Pair";
 import { Button } from "./ui";
+
+// The shared shell renders Linkit widgets, so the console asks AuthMini for both
+// audiences; the worker still only accepts tokens that carry its own audience.
+const AUDIENCES = (import.meta.env.VITE_AUTH_AUDIENCES ?? "exe.ntnl.io,linkit.ntnl.io")
+  .split(",")
+  .map((value: string) => value.trim())
+  .filter(Boolean);
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 0, refetchOnWindowFocus: false } } });
 
@@ -25,6 +33,25 @@ function LanguageSwitch() {
       <span className="text-xs uppercase">{lang}</span>
     </Button>
   );
+}
+
+function KeyBanner() {
+  const t = useCopy();
+  const { account, state, error } = useAccount();
+  const [holds, setHolds] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (state === "ready" || state === "mismatch") void holdsAccountKey(account).then(setHolds);
+  }, [state, account]);
+  if (state === "error") return <div className="m-6 rounded-lg border border-destructive/40 p-4 text-sm text-destructive">{error}</div>;
+  if (state === "mismatch" || holds === false) {
+    return (
+      <div className="m-6 rounded-lg border border-amber-500/40 bg-amber-500/5 p-4 text-sm">
+        <div className="font-medium">{t("key_missing_title")}</div>
+        <p className="mt-1 text-muted-foreground">{t("key_missing_body")}</p>
+      </div>
+    );
+  }
+  return null;
 }
 
 function Shell() {
@@ -44,6 +71,7 @@ function Shell() {
       ]}
       headerSlot={<LanguageSwitch />}
     >
+      <KeyBanner />
       <Routes>
         <Route path="/devices" element={<DevicesPage />} />
         <Route path="/devices/:id" element={<DevicePage />} />
@@ -56,13 +84,15 @@ function Shell() {
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <AuthMiniProvider authMiniBaseUrl="https://auth.ntnl.io" audiences={["exe.ntnl.io"]} autoRedirectToLogin>
+    <AuthMiniProvider authMiniBaseUrl="https://auth.ntnl.io" audiences={AUDIENCES} autoRedirectToLogin>
       <LinkitProvider linkitBaseUrl="https://linkit.ntnl.io" lang="zh-CN">
         <QueryClientProvider client={queryClient}>
           <LanguageProvider>
-            <HashRouter>
-              <Shell />
-            </HashRouter>
+            <AccountProvider>
+              <HashRouter>
+                <Shell />
+              </HashRouter>
+            </AccountProvider>
           </LanguageProvider>
         </QueryClientProvider>
       </LinkitProvider>

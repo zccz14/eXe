@@ -97,6 +97,8 @@ export function callTranscript(fields: CallFields): Uint8Array {
 export interface ResultFields {
   callId: string;
   deviceId: string;
+  /** Whether the tool succeeded. Signed, because the cloud can no longer decrypt. */
+  ok: boolean;
   eph: Uint8Array;
   nonce: Uint8Array;
   ciphertext: Uint8Array;
@@ -107,9 +109,34 @@ export function resultTranscript(fields: ResultFields): Uint8Array {
     utf8("eXe/v1/result\0"),
     lp(utf8(fields.callId)),
     lp(utf8(fields.deviceId)),
+    lp(okByte(fields.ok)),
     lp(fields.eph),
     lp(fields.nonce),
     lp(sha256(fields.ciphertext)),
+  );
+}
+
+function okByte(ok: boolean): Uint8Array {
+  return new Uint8Array([ok ? 1 : 0]);
+}
+
+/** Account registration: proves possession of the signing key for this AuthMini identity. */
+export interface AccountFields {
+  userId: string;
+  nonce: string;
+  sigPub: string;
+  kexPub: string;
+  issuedAt: number;
+}
+
+export function accountTranscript(fields: AccountFields): Uint8Array {
+  return cat(
+    utf8("eXe/v1/account\0"),
+    lp(utf8(fields.userId)),
+    lp(utf8(fields.nonce)),
+    lp(utf8(fields.sigPub)),
+    lp(utf8(fields.kexPub)),
+    u64be(fields.issuedAt),
   );
 }
 
@@ -158,8 +185,8 @@ export function newAccountKeys(): AccountKeys {
   return { sigSk, sigPub: ed25519.getPublicKey(sigSk), kexSk, kexPub: x25519.getPublicKey(kexSk) };
 }
 
-export function signCall(sigSk: Uint8Array, fields: CallFields): string {
-  return b64u(ed25519.sign(callTranscript(fields), sigSk));
+export function signCall(sigSeed: Uint8Array, fields: CallFields): string {
+  return b64u(ed25519.sign(callTranscript(fields), sigSeed));
 }
 export function verifyCall(sigPubB64u: string, fields: CallFields, signature: string): boolean {
   try {
@@ -168,8 +195,25 @@ export function verifyCall(sigPubB64u: string, fields: CallFields, signature: st
     return false;
   }
 }
-export function signApproval(sigSk: Uint8Array, fields: ApprovalFields): string {
-  return b64u(ed25519.sign(approvalTranscript(fields), sigSk));
+export function signAccount(sigSeed: Uint8Array, fields: AccountFields): string {
+  return b64u(ed25519.sign(accountTranscript(fields), sigSeed));
+}
+export function verifyAccount(sigPubB64u: string, fields: AccountFields, signature: string): boolean {
+  try {
+    return ed25519.verify(unb64u(signature), accountTranscript(fields), unb64u(sigPubB64u));
+  } catch {
+    return false;
+  }
+}
+export function signApproval(sigSeed: Uint8Array, fields: ApprovalFields): string {
+  return b64u(ed25519.sign(approvalTranscript(fields), sigSeed));
+}
+export function verifyApproval(sigPubB64u: string, fields: ApprovalFields, signature: string): boolean {
+  try {
+    return ed25519.verify(unb64u(signature), approvalTranscript(fields), unb64u(sigPubB64u));
+  } catch {
+    return false;
+  }
 }
 
 function sealKey(ikm: Uint8Array, callId: string, deviceId: string): Uint8Array {
@@ -182,6 +226,7 @@ function sealAad(callId: string, deviceId: string): Uint8Array {
 
 export interface SealedResult {
   v: 1;
+  ok: boolean;
   eph: string;
   nonce: string;
   ct: string;
@@ -190,6 +235,7 @@ export interface SealedResult {
 export function sealResult(input: {
   callId: string;
   deviceId: string;
+  ok: boolean;
   accountKexPub: Uint8Array;
   plaintext: string;
   ephemeralSecret?: Uint8Array;
@@ -199,7 +245,7 @@ export function sealResult(input: {
   const key = sealKey(x25519.getSharedSecret(ephemeralSecret, input.accountKexPub), input.callId, input.deviceId);
   const nonce = randomBytes(12);
   const ct = chacha20poly1305(key, nonce, sealAad(input.callId, input.deviceId)).encrypt(utf8(input.plaintext));
-  return { v: 1, eph: b64u(eph), nonce: b64u(nonce), ct: b64u(ct) };
+  return { v: 1, ok: input.ok, eph: b64u(eph), nonce: b64u(nonce), ct: b64u(ct) };
 }
 
 export function openResult(input: {
@@ -216,6 +262,10 @@ export function openResult(input: {
 }
 
 /** Envelope signature, produced by the device over T_result. */
+export function signResult(deviceSigSeed: Uint8Array, fields: ResultFields): string {
+  return b64u(ed25519.sign(resultTranscript(fields), deviceSigSeed));
+}
+
 export function verifyResultSignature(deviceSigPub: string, fields: ResultFields, signature: string): boolean {
   try {
     return ed25519.verify(unb64u(signature), resultTranscript(fields), unb64u(deviceSigPub));
@@ -223,29 +273,3 @@ export function verifyResultSignature(deviceSigPub: string, fields: ResultFields
     return false;
   }
 }
-
-const KEY_KEK = "eXe/v1/kek";
-
-async function kekKey(kek: Uint8Array): Promise<CryptoKey> {
-  return crypto.subtle.importKey("raw", kek as BufferSource, "AES-GCM", false, ["encrypt", "decrypt"]);
-}
-
-/** Seals an account private key under the worker KEK; storage never holds the raw key. */
-export async function sealSecret(kek: Uint8Array, secret: Uint8Array): Promise<string> {
-  const iv = randomBytes(12);
-  const ct = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv as BufferSource }, await kekKey(kek), secret as BufferSource),
-  );
-  return `v1.${b64u(iv)}.${b64u(ct)}`;
-}
-export async function openSecret(kek: Uint8Array, sealed: string): Promise<Uint8Array> {
-  const [version, iv, ct] = sealed.split(".");
-  if (version !== "v1" || !iv || !ct) throw new Error("unsupported sealed secret");
-  const plain = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: unb64u(iv) as BufferSource },
-    await kekKey(kek),
-    unb64u(ct) as BufferSource,
-  );
-  return new Uint8Array(plain);
-}
-export const KEK_INFO = KEY_KEK;

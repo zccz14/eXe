@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import vectors from "./vectors.json" with { type: "json" };
 import {
+  accountTranscript,
   approvalTranscript,
   b64u,
   callTranscript,
@@ -12,9 +13,12 @@ import {
   shortAuthenticationString,
   unb64u,
   unhex,
+  signAccount,
+  verifyAccount,
+  verifyApproval,
   verifyCall,
   verifyResultSignature,
-} from "../worker/src/crypto.ts";
+} from "../shared/protocol.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
 
@@ -41,6 +45,21 @@ test("any change to a signed call is rejected", () => {
   assert.equal(verifyCall(vectors.keys.device_sig_pub, call, vectors.call.sig), false);
 });
 
+test("account registration proves possession without sending a private key", () => {
+  const fields = {
+    userId: vectors.account.userId,
+    nonce: vectors.account.nonce,
+    sigPub: vectors.account.sigPub,
+    kexPub: vectors.account.kexPub,
+    issuedAt: vectors.account.issuedAt,
+  };
+  assert.equal(hex(sha256(accountTranscript(fields))), vectors.account.transcript_sha256);
+  assert.ok(verifyAccount(vectors.keys.account_sig_pub, fields, vectors.account.sig));
+  assert.equal(verifyAccount(vectors.keys.account_sig_pub, { ...fields, nonce: "other" }, vectors.account.sig), false);
+  assert.equal(verifyAccount(vectors.keys.device_sig_pub, fields, vectors.account.sig), false);
+  assert.equal(JSON.stringify(vectors.account).includes("seed"), false, "vectors carry no private material");
+});
+
 test("approval transcript is stable", () => {
   const fields = {
     pairingId: vectors.approval.pairingId,
@@ -53,11 +72,11 @@ test("approval transcript is stable", () => {
     issuedAt: vectors.approval.issuedAt,
   };
   assert.equal(hex(sha256(approvalTranscript(fields))), vectors.approval.transcript_sha256);
-  assert.ok(ed25519.verify(unb64u(vectors.approval.sig), approvalTranscript(fields), unb64u(vectors.keys.account_sig_pub)));
+  assert.ok(verifyApproval(vectors.keys.account_sig_pub, fields, vectors.approval.sig));
 });
 
 test("sealed results open with the account key and reject tampering", () => {
-  const envelope = { v: 1 as const, eph: vectors.result.eph, nonce: vectors.result.nonce, ct: vectors.result.ct };
+  const envelope = { v: 1 as const, ok: vectors.result.ok, eph: vectors.result.eph, nonce: vectors.result.nonce, ct: vectors.result.ct };
   const plaintext = openResult({
     accountKexSk: unhex(vectors.keys.account_kex_seed),
     callId: vectors.result.call_id,
@@ -75,10 +94,11 @@ test("sealed results open with the account key and reject tampering", () => {
   );
 });
 
-test("result signature covers the ciphertext", () => {
+test("result signature covers the ciphertext and the outcome", () => {
   const fields = {
     callId: vectors.result.call_id,
     deviceId: vectors.result.device_id,
+    ok: vectors.result.ok,
     eph: unb64u(vectors.result.eph),
     nonce: unb64u(vectors.result.nonce),
     ciphertext: unb64u(vectors.result.ct),
@@ -88,18 +108,21 @@ test("result signature covers the ciphertext", () => {
   const tampered = new Uint8Array(fields.ciphertext);
   tampered[0] = tampered[0]! ^ 1;
   assert.equal(verifyResultSignature(vectors.keys.device_sig_pub, { ...fields, ciphertext: tampered }, vectors.result.sig), false);
+  assert.equal(verifyResultSignature(vectors.keys.device_sig_pub, { ...fields, ok: false }, vectors.result.sig), false);
 });
 
 test("sealing is randomized but still opens", () => {
   const first = sealResult({
     callId: vectors.result.call_id,
     deviceId: vectors.result.device_id,
+    ok: true,
     accountKexPub: unb64u(vectors.keys.account_kex_pub),
     plaintext: "{}",
   });
   const second = sealResult({
     callId: vectors.result.call_id,
     deviceId: vectors.result.device_id,
+    ok: true,
     accountKexPub: unb64u(vectors.keys.account_kex_pub),
     plaintext: "{}",
   });

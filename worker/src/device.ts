@@ -4,14 +4,13 @@ import {
   equalHex,
   randomBytes,
   sha256Hex,
-  openResult,
   shortAuthenticationString,
   unb64u,
   verifyResultSignature,
   type SealedResult,
-} from "./crypto.ts";
+} from "../../shared/protocol.ts";
 import type { CallRow, DeviceRow, Env } from "./db.ts";
-import { callById, deviceByToken, unsealAccount } from "./db.ts";
+import { callById, deviceByToken } from "./db.ts";
 import { ApiError, body, empty, json, now } from "./http.ts";
 
 const PAIRING_TTL_SECONDS = 600;
@@ -53,6 +52,7 @@ export async function startPairing(request: Request, env: Env): Promise<Response
   const platform = shortLabel(input.platform, "platform", 40);
   const version = shortLabel(input.version, "version", 20);
   const id = crypto.randomUUID();
+  const deviceId = crypto.randomUUID();
   const code = formatCode(sha256Hex(id).slice(0, 12));
   const expiresAt = now() + PAIRING_TTL_SECONDS;
   // One live pairing per device key: restarting the agent replaces the previous code.
@@ -60,7 +60,7 @@ export async function startPairing(request: Request, env: Env): Promise<Response
     env.DB.prepare("DELETE FROM pairings WHERE dev_sig_pub=? AND status='pending'").bind(input.dev_sig_pub),
     env.DB.prepare("DELETE FROM pairings WHERE expires_at<? ").bind(now() - 86400),
     env.DB.prepare(
-      "INSERT INTO pairings(id,user_code,secret_hash,token_hash,dev_sig_pub,dev_kex_pub,hostname,platform,version,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO pairings(id,user_code,secret_hash,token_hash,dev_sig_pub,dev_kex_pub,hostname,platform,version,expires_at,device_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
     ).bind(
       id,
       code,
@@ -72,6 +72,7 @@ export async function startPairing(request: Request, env: Env): Promise<Response
       platform,
       version,
       expiresAt,
+      deviceId,
       now(),
     ),
   ]);
@@ -238,6 +239,7 @@ export async function markReceived(request: Request, env: Env, deviceId: string,
 
 interface ResultInput {
   v?: number;
+  ok?: boolean;
   eph?: string;
   nonce?: string;
   ct?: string;
@@ -250,6 +252,7 @@ export async function submitResult(request: Request, env: Env, deviceId: string,
   });
   const input = await body<ResultInput>(request);
   if (input.v !== 1) throw new ApiError(400, "unsupported result envelope version");
+  if (typeof input.ok !== "boolean") throw new ApiError(400, "result envelope must state ok");
   let eph: Uint8Array;
   let nonce: Uint8Array;
   let ciphertext: Uint8Array;
@@ -262,27 +265,19 @@ export async function submitResult(request: Request, env: Env, deviceId: string,
   }
   if (eph.length !== 32 || nonce.length !== 12 || ciphertext.length < 17) throw new ApiError(400, "malformed result envelope");
   if (typeof input.sig !== "string") throw new ApiError(400, "result envelope is missing a signature");
-  if (!verifyResultSignature(device.sig_pub, { callId, deviceId: device.id, eph, nonce, ciphertext }, input.sig)) {
+  if (!verifyResultSignature(device.sig_pub, { callId, deviceId: device.id, ok: input.ok, eph, nonce, ciphertext }, input.sig)) {
     throw new ApiError(403, "result signature does not match the device key");
   }
   const call = await callById(env, callId);
   if (!call || call.device_id !== device.id) throw new ApiError(404, "unknown call");
   if (!["delivered", "received"].includes(call.status)) throw new ApiError(409, "call is already settled");
 
-  const account = await unsealAccount(env, call.owner_user_id);
-  const envelope: SealedResult = { v: 1, eph: b64u(eph), nonce: b64u(nonce), ct: b64u(ciphertext) };
-  let ok = false;
-  try {
-    const plaintext = openResult({ accountKexSk: account.kexSk, callId, deviceId: device.id, envelope });
-    const parsed = JSON.parse(plaintext) as { ok?: boolean };
-    ok = parsed.ok === true;
-  } catch {
-    throw new ApiError(400, "result envelope could not be opened");
-  }
+  const envelope: SealedResult = { v: 1, ok: input.ok, eph: b64u(eph), nonce: b64u(nonce), ct: b64u(ciphertext) };
+  // The worker stores the envelope as-is: it holds no key that could open it.
   await env.DB.prepare(
-    "UPDATE calls SET envelope=?, sig=COALESCE(sig,?), status=?, settled_at=?, failure_code=NULL WHERE id=? AND status IN ('delivered','received')",
+    "UPDATE calls SET envelope=?, sig=?, status=?, settled_at=?, failure_code=NULL WHERE id=? AND status IN ('delivered','received')",
   )
-    .bind(JSON.stringify(envelope), input.sig, ok ? "succeeded" : "failed", now(), callId)
+    .bind(JSON.stringify(envelope), input.sig, input.ok ? "succeeded" : "failed", now(), callId)
     .run();
   return empty();
 }

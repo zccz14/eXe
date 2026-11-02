@@ -1,17 +1,24 @@
 PRAGMA foreign_keys = ON;
 
+-- Public keys only. There is no column that could hold a private key.
 CREATE TABLE IF NOT EXISTS accounts (
-  user_id       TEXT PRIMARY KEY,
-  sig_pub       TEXT NOT NULL,
-  kex_pub       TEXT NOT NULL,
-  sig_sk_sealed TEXT NOT NULL,
-  kex_sk_sealed TEXT NOT NULL,
-  created_at    INTEGER NOT NULL
+  user_id    TEXT PRIMARY KEY,
+  sig_pub    TEXT NOT NULL,
+  kex_pub    TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- One-shot nonces proving possession of the signing key during registration.
+CREATE TABLE IF NOT EXISTS account_challenges (
+  user_id    TEXT PRIMARY KEY,
+  nonce      TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS devices (
   id            TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL REFERENCES accounts(user_id),
+  owner_user_id TEXT NOT NULL,
   label         TEXT NOT NULL,
   hostname      TEXT NOT NULL,
   platform      TEXT NOT NULL,
@@ -41,7 +48,7 @@ CREATE TABLE IF NOT EXISTS pairings (
   version        TEXT NOT NULL,
   expires_at     INTEGER NOT NULL,
   status         TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','denied')),
-  device_id      TEXT,
+  device_id      TEXT NOT NULL,
   account_id     TEXT,
   approval       TEXT,
   created_at     INTEGER NOT NULL,
@@ -51,7 +58,7 @@ CREATE INDEX IF NOT EXISTS pairings_device ON pairings(dev_sig_pub, created_at D
 
 CREATE TABLE IF NOT EXISTS calls (
   id                  TEXT PRIMARY KEY,
-  device_id           TEXT NOT NULL REFERENCES devices(id),
+  device_id           TEXT NOT NULL,
   owner_user_id       TEXT NOT NULL,
   name                TEXT NOT NULL,
   args                TEXT NOT NULL,

@@ -1,21 +1,44 @@
-// Console API: AuthMini-authenticated device management and call dispatch.
+// Console API. Every execution-bearing action arrives already signed by the
+// browser-held account key; this module only ever *verifies*.
 import {
   b64u,
-  openResult,
   randomBytes,
   sha256Hex,
   shortAuthenticationString,
-  signApproval,
-  signCall,
   unb64u,
-  type SealedResult,
-} from "./crypto.ts";
-import type { CallRow, DeviceRow, Env, PairingRow } from "./db.ts";
-import { callById, deviceById, ensureAccount, unsealAccount, unsealAccount as unseal } from "./db.ts";
+  verifyAccount,
+  verifyApproval,
+  verifyCall,
+} from "../../shared/protocol.ts";
+import type { AccountRow, CallRow, DeviceRow, Env, PairingRow } from "./db.ts";
+import { accountByUser, callById, deviceById } from "./db.ts";
 import { normalizeCode } from "./device.ts";
 import { ApiError, body, empty, json, now } from "./http.ts";
 
 const OFFLINE_AFTER_SECONDS = 90;
+const CHALLENGE_TTL_SECONDS = 300;
+const CLOCK_SKEW_SECONDS = 300;
+
+function isKey(value: unknown): value is string {
+  if (typeof value !== "string" || value.length < 40 || value.length > 60) return false;
+  try {
+    return unb64u(value).length === 32;
+  } catch {
+    return false;
+  }
+}
+function requireKey(value: unknown, field: string): string {
+  if (!isKey(value)) throw new ApiError(400, `${field} must be a 32-byte base64url key`);
+  return value;
+}
+function str(value: unknown, field: string, max: number): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > max) throw new ApiError(400, `${field} is invalid`);
+  return value;
+}
+function num(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new ApiError(400, `${field} is invalid`);
+  return Math.trunc(value);
+}
 
 export interface DeviceView {
   id: string;
@@ -83,15 +106,59 @@ function callView(row: CallRow): CallView {
   };
 }
 
+async function requireAccount(env: Env, userId: string): Promise<AccountRow> {
+  const account = await accountByUser(env, userId);
+  if (!account) throw new ApiError(409, "this account has no registered key yet", "account_unregistered");
+  return account;
+}
+
 export async function me(env: Env, userId: string): Promise<Response> {
-  const account = await ensureAccount(env, userId);
+  const account = await accountByUser(env, userId);
   return json({
     account_id: userId,
-    sig_pub: account.sig_pub,
-    kex_pub: account.kex_pub,
-    fingerprint: sha256Hex(account.sig_pub).slice(0, 32),
-    created_at: account.created_at,
+    registered: account !== null,
+    sig_pub: account?.sig_pub ?? null,
+    kex_pub: account?.kex_pub ?? null,
+    fingerprint: account ? sha256Hex(account.sig_pub).slice(0, 32) : null,
+    created_at: account?.created_at ?? null,
+    custody: "browser",
   });
+}
+
+export async function challenge(env: Env, userId: string): Promise<Response> {
+  const nonce = b64u(randomBytes(24));
+  const expiresAt = now() + CHALLENGE_TTL_SECONDS;
+  await env.DB.prepare(
+    "INSERT INTO account_challenges(user_id,nonce,expires_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET nonce=excluded.nonce, expires_at=excluded.expires_at",
+  )
+    .bind(userId, nonce, expiresAt)
+    .run();
+  return json({ user_id: userId, nonce, expires_at: expiresAt });
+}
+
+/** Registers the browser-held public keys. A signature proves the browser owns them. */
+export async function registerAccount(env: Env, userId: string, request: Request): Promise<Response> {
+  const input = await body<Record<string, unknown>>(request);
+  const sigPub = requireKey(input.sig_pub, "sig_pub");
+  const kexPub = requireKey(input.kex_pub, "kex_pub");
+  const nonce = str(input.nonce, "nonce", 64);
+  const issuedAt = num(input.issued_at, "issued_at");
+  const signature = str(input.sig, "sig", 128);
+  if (Math.abs(now() - issuedAt) > CHALLENGE_TTL_SECONDS) throw new ApiError(400, "registration is stale");
+  const row = await env.DB.prepare("SELECT nonce, expires_at FROM account_challenges WHERE user_id=?")
+    .bind(userId)
+    .first<{ nonce: string; expires_at: number }>();
+  if (!row || row.nonce !== nonce) throw new ApiError(409, "unknown registration challenge");
+  if (row.expires_at <= now()) throw new ApiError(410, "registration challenge expired");
+  const fields = { userId, nonce, sigPub, kexPub, issuedAt };
+  if (!verifyAccount(sigPub, fields, signature)) throw new ApiError(403, "registration signature does not verify");
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO accounts(user_id,sig_pub,kex_pub,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET sig_pub=excluded.sig_pub, kex_pub=excluded.kex_pub, updated_at=excluded.updated_at",
+    ).bind(userId, sigPub, kexPub, now(), now()),
+    env.DB.prepare("DELETE FROM account_challenges WHERE user_id=?").bind(userId),
+  ]);
+  return json({ account_id: userId, registered: true, sig_pub: sigPub, kex_pub: kexPub });
 }
 
 export async function listDevices(env: Env, userId: string): Promise<Response> {
@@ -113,100 +180,135 @@ export async function readPairing(env: Env, userId: string, rawCode: string): Pr
   const code = normalizeCode(rawCode);
   const row = await env.DB.prepare("SELECT * FROM pairings WHERE user_code=?").bind(code).first<PairingRow>();
   if (!row) throw new ApiError(404, "unknown pairing code");
-  const account = await ensureAccount(env, userId);
+  const account = await accountByUser(env, userId);
+  if (!account) throw new ApiError(409, "register this browser's key before approving a device", "account_unregistered");
   const expired = row.status !== "approved" && row.expires_at <= now();
   return json({
+    pairing_id: row.id,
     user_code: row.user_code,
     hostname: row.hostname,
     platform: row.platform,
     version: row.version,
     status: expired ? "expired" : row.status,
     expires_at: row.expires_at,
+    device_id: row.device_id,
     device_sig_pub: row.dev_sig_pub,
+    device_kex_pub: row.dev_kex_pub,
+    account_sig_pub: account.sig_pub,
+    account_kex_pub: account.kex_pub,
     sas: shortAuthenticationString(account.sig_pub, row.dev_sig_pub),
   });
 }
 
+interface ApprovalInput {
+  issued_at?: unknown;
+  sig?: unknown;
+  label?: unknown;
+}
+
+/** Stores a browser-signed approval; the worker cannot mint one itself. */
 export async function approvePairing(env: Env, userId: string, rawCode: string, request: Request): Promise<Response> {
   const code = normalizeCode(rawCode);
-  const input = await body<{ label?: string }>(request).catch(() => ({}) as { label?: string });
+  const input = await body<ApprovalInput>(request).catch(() => ({}) as ApprovalInput);
+  const account = await requireAccount(env, userId);
   const row = await env.DB.prepare("SELECT * FROM pairings WHERE user_code=?").bind(code).first<PairingRow>();
   if (!row) throw new ApiError(404, "unknown pairing code");
   if (row.status !== "pending") throw new ApiError(409, `pairing is already ${row.status}`);
   if (row.expires_at <= now()) throw new ApiError(410, "pairing code expired");
-  const existing = await env.DB.prepare("SELECT id FROM devices WHERE sig_pub=? AND status='active'").bind(row.dev_sig_pub).first<{ id: string }>();
-  if (existing) throw new ApiError(409, "this device is already registered");
-
-  const account = await unseal(env, userId);
-  const deviceId = crypto.randomUUID();
-  const issuedAt = now();
-  const label = (input.label ?? row.hostname).slice(0, 80);
-  const sas = shortAuthenticationString(account.row.sig_pub, row.dev_sig_pub);
-  const approvalFields = {
+  const issuedAt = num(input.issued_at, "issued_at");
+  if (Math.abs(now() - issuedAt) > CLOCK_SKEW_SECONDS) throw new ApiError(400, "approval is stale");
+  const signature = str(input.sig, "sig", 128);
+  const fields = {
     pairingId: row.id,
-    deviceId,
+    deviceId: row.device_id,
     accountId: userId,
-    accountSigPub: account.row.sig_pub,
-    accountKexPub: account.row.kex_pub,
+    accountSigPub: account.sig_pub,
+    accountKexPub: account.kex_pub,
     deviceSigPub: row.dev_sig_pub,
     deviceKexPub: row.dev_kex_pub,
     issuedAt,
   };
-  const approval = { ...approvalFields, sig: signApproval(account.sigSk, approvalFields) };
+  if (!verifyApproval(account.sig_pub, fields, signature)) {
+    throw new ApiError(403, "approval signature does not verify against the registered account key");
+  }
+  const existing = await env.DB.prepare("SELECT id FROM devices WHERE sig_pub=? AND status='active'").bind(row.dev_sig_pub).first<{ id: string }>();
+  if (existing) throw new ApiError(409, "this device is already registered");
+  const label = typeof input.label === "string" && input.label.trim() ? input.label.trim().slice(0, 80) : row.hostname;
+  const sas = shortAuthenticationString(account.sig_pub, row.dev_sig_pub);
+  const approval = { ...fields, sig: signature };
   await env.DB.batch([
     env.DB.prepare(
       "INSERT INTO devices(id,owner_user_id,label,hostname,platform,version,sig_pub,kex_pub,token_hash,status,sas,created_at) VALUES(?,?,?,?,?,?,?,?,?,'active',?,?)",
-    ).bind(deviceId, userId, label, row.hostname, row.platform, row.version, row.dev_sig_pub, row.dev_kex_pub, row.token_hash, sas, now()),
+    ).bind(row.device_id, userId, label, row.hostname, row.platform, row.version, row.dev_sig_pub, row.dev_kex_pub, row.token_hash, sas, now()),
     env.DB.prepare("UPDATE pairings SET status='approved', device_id=?, account_id=?, approval=? WHERE id=? AND status='pending'").bind(
-      deviceId,
+      row.device_id,
       userId,
       JSON.stringify(approval),
       row.id,
     ),
   ]);
-  const device = await deviceById(env, deviceId);
+  const device = await deviceById(env, row.device_id);
   return json({ device: device ? deviceView(device) : null, sas });
 }
 
 export async function denyPairing(env: Env, userId: string, rawCode: string): Promise<Response> {
   const code = normalizeCode(rawCode);
-  await ensureAccount(env, userId);
+  await requireAccount(env, userId);
   const result = await env.DB.prepare("UPDATE pairings SET status='denied' WHERE user_code=? AND status='pending'").bind(code).run();
   if (result.meta.changes === 0) throw new ApiError(404, "unknown or settled pairing code");
   return empty();
 }
 
+interface CallInput {
+  id?: unknown;
+  name?: unknown;
+  args?: unknown;
+  nonce?: unknown;
+  issued_at?: unknown;
+  expires_at?: unknown;
+  sig?: unknown;
+}
+
+/** Accepts a fully signed call. The worker never chooses or reshapes its contents. */
 export async function createCall(env: Env, userId: string, deviceId: string, request: Request): Promise<Response> {
-  const input = await body<{ name?: unknown; args?: unknown; ttl?: unknown }>(request);
-  if (typeof input.name !== "string" || !/^[a-z][a-z0-9_:.-]{0,63}$/.test(input.name)) throw new ApiError(400, "invalid tool name");
-  const args = input.args ?? {};
-  if (typeof args !== "object" || args === null || Array.isArray(args)) throw new ApiError(400, "args must be a JSON object");
-  const ttl = typeof input.ttl === "number" && input.ttl >= 10 && input.ttl <= 3600 ? Math.trunc(input.ttl) : 300;
+  const input = await body<CallInput>(request);
+  const account = await requireAccount(env, userId);
+  const id = str(input.id, "id", 36);
+  if (!/^[0-9a-fA-F-]{36}$/.test(id)) throw new ApiError(400, "id must be a UUID");
+  const name = str(input.name, "name", 64);
+  if (!/^[a-z][a-z0-9_:.-]*$/.test(name)) throw new ApiError(400, "invalid tool name");
+  const args = str(input.args, "args", 65536);
+  try {
+    const parsed = JSON.parse(args) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error();
+  } catch {
+    throw new ApiError(400, "args must be a JSON object serialized as a string");
+  }
+  const nonce = str(input.nonce, "nonce", 64);
+  const issuedAt = num(input.issued_at, "issued_at");
+  const expiresAt = num(input.expires_at, "expires_at");
+  const signature = str(input.sig, "sig", 128);
+  if (Math.abs(now() - issuedAt) > CLOCK_SKEW_SECONDS) throw new ApiError(400, "issued_at is stale");
+  if (expiresAt <= now()) throw new ApiError(400, "call already expired");
+  if (expiresAt - issuedAt > 3600) throw new ApiError(400, "a call may not live longer than one hour");
+
   const device = await deviceById(env, deviceId);
   if (!device || device.owner_user_id !== userId) throw new ApiError(404, "device not found");
   if (device.status !== "active") throw new ApiError(409, "device is revoked");
 
-  const account = await unsealAccount(env, userId);
-  const callId = crypto.randomUUID();
-  const issuedAt = now();
-  const fields = {
-    callId,
-    deviceId: device.id,
-    accountId: userId,
-    name: input.name,
-    args: JSON.stringify(args),
-    nonce: b64u(randomBytes(16)),
-    issuedAt,
-    expiresAt: issuedAt + ttl,
-  };
-  const sig = signCall(account.sigSk, fields);
+  const fields = { callId: id, deviceId: device.id, accountId: userId, name, args, nonce, issuedAt, expiresAt };
+  if (!verifyCall(account.sig_pub, fields, signature)) {
+    throw new ApiError(403, "call signature does not verify against the registered account key");
+  }
+  const existing = await callById(env, id);
+  if (existing) throw new ApiError(409, "call id already used");
   await env.DB.batch([
     env.DB.prepare(
       "INSERT INTO calls(id,device_id,owner_user_id,name,args,nonce,issued_at,expires_at,sig,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,'queued',?)",
-    ).bind(callId, device.id, userId, fields.name, fields.args, fields.nonce, fields.issuedAt, fields.expiresAt, sig, now()),
+    ).bind(id, device.id, userId, name, args, nonce, issuedAt, expiresAt, signature, now()),
     env.DB.prepare("UPDATE calls SET status='expired' WHERE device_id=? AND status='queued' AND expires_at<=?").bind(device.id, now()),
   ]);
-  return json({ call: callView((await callById(env, callId))!), sig });
+  return json({ call: callView((await callById(env, id))!) });
 }
 
 export async function listCalls(env: Env, userId: string, url: URL): Promise<Response> {
@@ -222,19 +324,11 @@ export async function listCalls(env: Env, userId: string, url: URL): Promise<Res
   return json({ calls: rows.results.map(callView) });
 }
 
+/** Returns the sealed envelope verbatim; opening it is the browser's job. */
 export async function readCall(env: Env, userId: string, id: string): Promise<Response> {
   const row = await callById(env, id);
   if (!row || row.owner_user_id !== userId) throw new ApiError(404, "call not found");
-  let result: unknown = null;
-  if (row.envelope) {
-    const account = await unsealAccount(env, userId);
-    try {
-      result = JSON.parse(openResult({ accountKexSk: account.kexSk, callId: row.id, deviceId: row.device_id, envelope: JSON.parse(row.envelope) as SealedResult }));
-    } catch {
-      result = { ok: false, error: "result envelope could not be opened" };
-    }
-  }
-  return json({ call: callView(row), result });
+  return json({ call: callView(row), envelope: row.envelope ? JSON.parse(row.envelope) : null });
 }
 
 export async function cancelCall(env: Env, userId: string, id: string): Promise<Response> {

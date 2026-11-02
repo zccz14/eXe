@@ -155,6 +155,7 @@ impl ResultEnvelope {
         out.extend_from_slice(b"eXe/v1/result\0");
         push_lp(&mut out, call_id.as_bytes());
         push_lp(&mut out, device_id.as_bytes());
+        push_lp(&mut out, &[u8::from(self.sealed.ok)]);
         push_lp(&mut out, &eph);
         push_lp(&mut out, &nonce);
         push_lp(&mut out, &sha256(&ciphertext));
@@ -164,11 +165,13 @@ impl ResultEnvelope {
     pub fn build(
         call_id: &str,
         device_id: &str,
+        ok: bool,
         account_kex_pub: &[u8],
         plaintext: &str,
         keys: &DeviceKeys,
     ) -> Result<Self, CryptoError> {
-        let sealed = crate::crypto::seal_result(call_id, device_id, account_kex_pub, plaintext)?;
+        let sealed =
+            crate::crypto::seal_result(call_id, device_id, ok, account_kex_pub, plaintext)?;
         let mut envelope = Self {
             sealed,
             sig: String::new(),
@@ -300,6 +303,7 @@ mod tests {
 
         let sealed = SealedResult {
             v: 1,
+            ok: vectors["result"]["ok"].as_bool().unwrap(),
             eph: vectors["result"]["eph"].as_str().unwrap().into(),
             nonce: vectors["result"]["nonce"].as_str().unwrap().into(),
             ct: vectors["result"]["ct"].as_str().unwrap().into(),

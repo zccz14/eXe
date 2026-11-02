@@ -54,6 +54,9 @@ const copy = {
     cancelled: "已取消",
     expired_state: "已过期",
     language: "语言",
+    account_missing: "这个浏览器没有账号私钥，无法签名",
+    key_missing_title: "这个浏览器不持有账号私钥",
+    key_missing_body: "私钥只存在于创建它的浏览器里。换一台浏览器就看不到结果，也无法签发调用——这正是「云端不存私钥」的代价。",
   },
   en: {
     app: "eXe",
@@ -106,6 +109,9 @@ const copy = {
     cancelled: "cancelled",
     expired_state: "expired",
     language: "Language",
+    account_missing: "This browser does not hold the account key and cannot sign",
+    key_missing_title: "This browser does not hold the account key",
+    key_missing_body: "The private key only exists in the browser that created it. Another browser can neither read old results nor authorize new calls — that is the price of keeping private keys off the server.",
   },
 } as const;
 

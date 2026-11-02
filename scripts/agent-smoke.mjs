@@ -1,4 +1,4 @@
-// Drives the real exe binary against a local worker: pair, run, execute, report.
+// Drives the real exe binary against a local worker with a non-custodial console.
 import { spawn, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startJwks } from "./jwks.mjs";
-import { b64u } from "../worker/src/crypto.ts";
+import { makeBrowser } from "./browser.mjs";
 
 const PORT = 8787;
 const base = `http://127.0.0.1:${PORT}`;
@@ -17,7 +17,7 @@ const run = (command, args) => spawnSync(command, args, { stdio: "inherit" });
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function main() {
-  spawnSync("bash", ["-c", `printf 'AUTH_ISSUER=${jwks.url}\\nAUTH_AUDIENCE=exe.test\\nEXE_KEK=${b64u(new Uint8Array(32).fill(3))}\\n' > .dev.vars`]);
+  spawnSync("bash", ["-c", `printf 'AUTH_ISSUER=${jwks.url}\\nAUTH_AUDIENCE=exe.test\\n' > .dev.vars`]);
   run("npx", ["wrangler", "d1", "execute", "exe", "--local", "--file", "worker/src/schema.sql"]);
   const dev = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--ip", "127.0.0.1"], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -49,9 +49,10 @@ async function main() {
       }
       await wait(500);
     }
-    const token = jwks.mint(randomUUID());
-    const auth = { authorization: `Bearer ${token}`, "content-type": "application/json" };
-    await fetch(`${base}/api/me`, { headers: auth });
+    const userId = randomUUID();
+    const auth = { authorization: `Bearer ${jwks.mint(userId)}`, "content-type": "application/json" };
+    const browser = makeBrowser();
+    await browser.register(base, auth);
 
     agent = spawn("./agent/target/debug/exe", ["run"], {
       env: { ...process.env, EXE_BASE_URL: base, EXE_CONFIG_DIR: configDir, EXE_HOSTNAME: "smoke-host", RUST_LOG: "info" },
@@ -71,7 +72,7 @@ async function main() {
     assert.equal(view.status, "pending");
     console.log(`pairing code ${code}, sas ${view.sas}`);
 
-    await fetch(`${base}/api/pairings/${code}`, { method: "POST", headers: auth, body: JSON.stringify({ label: "smoke" }) });
+    await browser.approve(base, auth, { ...view, account_id: userId }, "smoke");
     for (let attempt = 0; attempt < 80 && !agentLog.includes("SAS"); attempt += 1) await wait(250);
     assert.ok(agentLog.includes(view.sas), `the agent prints the same SAS\n${agentLog}`);
     for (let attempt = 0; attempt < 80 && !agentLog.includes("subscribed"); attempt += 1) await wait(250);
@@ -81,40 +82,36 @@ async function main() {
     const deviceId = devices.devices[0].id;
     assert.equal(devices.devices[0].sas, view.sas);
 
-    const send = async (name, args) =>
-      (await fetch(`${base}/api/devices/${deviceId}/calls`, { method: "POST", headers: auth, body: JSON.stringify({ name, args }) }).then((r) => r.json())).call;
+    const settle = async (callId) => {
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        const detail = await fetch(`${base}/api/calls/${callId}`, { headers: auth }).then((r) => r.json());
+        if (detail.call.status === "succeeded" || detail.call.status === "failed") {
+          return { ...detail, opened: detail.envelope ? browser.open(callId, deviceId, detail.envelope) : null };
+        }
+        await wait(500);
+      }
+      throw new Error(`call ${callId} did not settle`);
+    };
 
-    const echo = await send("echo", { text: "hello from rust" });
-    let detail = null;
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      detail = await fetch(`${base}/api/calls/${echo.id}`, { headers: auth }).then((r) => r.json());
-      if (detail.call.status === "succeeded" || detail.call.status === "failed") break;
-      await wait(500);
-    }
-    assert.equal(detail.call.status, "succeeded", JSON.stringify(detail));
-    assert.equal(detail.result.output.text, "hello from rust");
+    const echo = await browser.call(base, auth, deviceId, userId, "echo", { text: "hello from rust" });
+    const echoResult = await settle(echo.call.id);
+    assert.equal(echoResult.opened.output.text, "hello from rust");
 
-    const sysinfo = await send("sysinfo", {});
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      detail = await fetch(`${base}/api/calls/${sysinfo.id}`, { headers: auth }).then((r) => r.json());
-      if (detail.call.status === "succeeded" || detail.call.status === "failed") break;
-      await wait(500);
-    }
-    assert.equal(detail.result.output.tool, "sysinfo");
+    const sysinfo = await browser.call(base, auth, deviceId, userId, "sysinfo", {});
+    const sysinfoResult = await settle(sysinfo.call.id);
+    assert.equal(sysinfoResult.opened.output.tool, "sysinfo");
 
     // Default policy denies the shell even though the signature is valid.
-    const bash = await send("bash", { command: "id" });
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      detail = await fetch(`${base}/api/calls/${bash.id}`, { headers: auth }).then((r) => r.json());
-      if (detail.call.status === "succeeded" || detail.call.status === "failed") break;
-      await wait(500);
-    }
-    assert.equal(detail.result.ok, false);
-    assert.equal(detail.result.code, "policy_denied");
+    const bash = await browser.call(base, auth, deviceId, userId, "bash", { command: "id" });
+    const bashResult = await settle(bash.call.id);
+    assert.equal(bashResult.opened.ok, false);
+    assert.equal(bashResult.opened.code, "policy_denied");
+    assert.equal(bashResult.call.status, "failed", "the signed outcome, not a decryption, sets the status");
     console.log("agent smoke: ok");
   } catch (error) {
-    console.error(agentLog?.slice(-3000));
-    console.error(devLog.slice(-2000));
+    console.error("FAILED:", error instanceof Error ? error.message : error);
+    console.error(agentLog.slice(-2000));
+    console.error(devLog.slice(-1500));
     cleanup();
     process.exit(1);
   }
