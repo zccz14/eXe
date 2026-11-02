@@ -51,16 +51,22 @@ label   = "mac-mini"
 
   ```
   x-exe-timestamp: <unix 秒>
-  x-exe-nonce:     <base64url 16 字节随机数，一次性>
   x-exe-signature: base58(Ed25519(本端私钥, T_request))
   x-exe-address:   <base58 地址>      # 仅 /api/*；/v1/* 从路径取地址
   ```
 
-  签名覆盖的 `address` 只有一个：`/v1/agents/{address}` 从路径取，`/api/*` 从
+  ```
+  T_request = "eXe/request\0" ‖ lp(method) ‖ lp(path) ‖ lp(address) ‖ u64(timestamp)
+  ```
+
+  签名覆盖的 `address` 只有一个：`/v1/devices/{address}` 从路径取，`/api/*` 从
   `x-exe-address` 取。因此请求无法声称一个它签不出来的地址。
 
-  云端拒绝时间窗（±300 秒）之外的请求，并把 `(address, nonce)` 落库去重：
-  被截获的请求在 nonce 用掉之后再也重放不了。
+  云端只拒绝时间窗（±300 秒）之外的请求，**不做请求级去重**——没有 nonce 表。
+  被截获的请求可以原样重发，但云端接受的每一条写都由发送者签过的 `call_id` 定死：
+  建单撞主键（409）、回执重写同一个时间戳、结果封逐字节比对（同封 204 / 异封 409）。
+  重放因此只是把同一行原样再说一遍，不会产生第二次效果。这是一条**不变量**，
+  新增任何写入路径都必须满足它：幂等键由请求者签发并被签名覆盖，服务端不得自行生成。
 
 - 没有二维码、没有确认码、没有批准签名：信任的建立就是**在控制台填设备地址、在设备上填控制台地址**。
 
@@ -115,6 +121,10 @@ result = { "call_id": "...", "device": "<base58>", "ok": true, "issued_at": 0,
 投递是**至少一次**的：回执丢失时云端会重投同一个 `call_id`。设备因此必须幂等——
 进程内保留 `call_id → 结果信封`，重投时直接回结果，不重复执行。
 
+云端判断「该重投」只看一件事：这条调用还没有回执（`status = 'queued'`）。推送本身
+不写库——一条连接记得自己发过什么，断线重连时清空，于是所有未回执的调用被整条重投。
+`received_at` 来自设备自己签的回执，是系统里唯一一条「确实送达」的证据。
+
 设备收到一条调用时按顺序做四件事：
 
 ```
@@ -138,28 +148,37 @@ call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| PUT | `/v1/agents/{address}` | 自登记/续约（`hostname`/`platform`/`version`） |
-| GET | `/v1/agents/{address}/stream` | SSE：`hello` / `call` / `cancel` / `heartbeat` |
-| POST | `/v1/agents/{address}/calls/{call_id}/received` | 收到 |
-| POST | `/v1/agents/{address}/calls/{call_id}/result` | 回传密封结果 |
+| PUT | `/v1/devices/{address}` | 自登记/续约（`hostname`/`platform`/`version`） |
+| GET | `/v1/devices/{address}/stream` | SSE：`hello` / `call` / `cancel` / `heartbeat` |
+| POST | `/v1/devices/{address}/calls/{call_id}/received` | 收到（唯一的妥投证据） |
+| POST | `/v1/devices/{address}/calls/{call_id}/result` | 回传密封结果 |
 
 控制台（同样是每次请求自签，见 §2；地址在 `x-exe-address`）：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/me` | 云端认得的地址 `{ address, custody }` |
-| POST | `/api/devices` | 添加设备 `{ address }` |
-| GET | `/api/devices` | 列表（地址、在线、主机信息） |
-| DELETE | `/api/devices/{address}` | 移除（同时把未结的调用标记为取消） |
+| GET | `/api/devices/{address}` | 该地址的在线态与自登记信息（`registered` / `online` / `last_seen_at`） |
 | POST | `/api/devices/{address}/calls` | 投递信封 |
 | GET | `/api/calls?device={address}` · `/api/calls/{call_id}` | 状态与信封（浏览器自行解封） |
 | POST | `/api/calls/{call_id}/cancel` | 请求取消 |
 
-控制台没有注册这一步：地址由浏览器自己生成，第一次请求就生效。云端为每个地址
-保留它自己的地址簿与调用记录——归属由签名回答，`calls.issuer` 就是它的所有者，
-没有第二个 `user_id` 列。
+控制台没有注册这一步：地址由浏览器自己生成，第一次请求就生效。归属由签名回答，
+`calls.issuer` 就是它的所有者，没有第二个 `user_id` 列。
 
-云端只为**已添加**的地址排队；设备的自登记与它是否被某个控制台添加无关。
+**云端没有地址簿。** 控制台记得哪些设备，是它自己浏览器里的一份名单（IndexedDB）；
+换浏览器、清站点数据，名单就没了，重填一次即可，设备上的 `trust` 一个字都不用动。
+因此云端为**任何**地址排队——只要信封验签通过；设备执不执行，只由它自己的 `trust` 回答。
+
+调用状态：
+
+```
+queued      已入队，未收到回执（= 未妥投）
+received    设备签过收据；这是唯一一条「确实送达」的证据
+succeeded / failed   设备签过的结果
+cancelled   在 queued 时被取消
+expired     已过 expires_at
+```
 
 ## 7. 执行限额
 

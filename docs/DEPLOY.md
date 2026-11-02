@@ -44,15 +44,13 @@ wrangler pages deploy console/dist --project-name=exe-console --branch=main
 
   ```sh
   wrangler d1 execute exe --remote --command \
-    "DROP TABLE IF EXISTS calls; DROP TABLE IF EXISTS devices; DROP TABLE IF EXISTS agents; \
-     DROP TABLE IF EXISTS accounts; DROP TABLE IF EXISTS account_challenges; \
-     DROP TABLE IF EXISTS request_nonces;"
+    "DROP TABLE IF EXISTS calls; DROP TABLE IF EXISTS devices;"
   wrangler d1 execute exe --remote --file worker/src/schema.sql
   ```
 
-  旧数据不解密、不迁移：它属于旧线格式，密钥与报文都对不上。`accounts` /
-  `account_challenges` 是账号体系留下的表，删掉即可——控制台的归属现在由
-  `calls.issuer` 和 `devices.owner_address` 回答。
+  旧数据不解密、不迁移：它属于旧线格式，密钥与报文都对不上。线上只应该有
+  `devices` 与 `calls` 两张表；如果还看到 `agents` / `request_nonces` /
+  带 `owner_address` 的旧 `devices`，那是更早一版留下的，一并 `DROP` 掉即可。
 
 ## 版本
 
