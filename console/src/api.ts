@@ -1,18 +1,5 @@
-export interface SessionLike {
-  getState(): { accessToken?: string | null };
-  refresh(): Promise<{ accessToken?: string | null }>;
-}
-export interface SdkLike {
-  session: SessionLike;
-}
-
-async function token(sdk: SdkLike): Promise<string> {
-  const state = sdk.session.getState();
-  if (state.accessToken) return state.accessToken;
-  const refreshed = await sdk.session.refresh();
-  if (!refreshed.accessToken) throw new Error("AuthMini session is not available");
-  return refreshed.accessToken;
-}
+import { requestHeaders } from "../../shared/protocol.ts";
+import { localIdentity } from "./keystore";
 
 /** The console is a static Pages app; the relay lives on its own origin. */
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
@@ -22,31 +9,47 @@ export function apiUrl(path: string): string {
   return `${API_BASE}${path}`;
 }
 
-/** Endpoints that need no AuthMini token, such as release metadata. */
+/** Endpoints that need no signature, such as release metadata. */
 export async function publicApi<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`);
   if (!response.ok) throw new Error(`${response.status}`);
   return (await response.json()) as T;
 }
 
-export async function api<T>(sdk: SdkLike, path: string, init: RequestInit = {}): Promise<T> {
-  const send = async (bearer: string) =>
-    fetch(`${API_BASE}${path}`, {
-      ...init,
-      headers: { ...(init.body ? { "content-type": "application/json" } : {}), ...(init.headers ?? {}), authorization: `Bearer ${bearer}` },
-    });
-  let response = await send(await token(sdk));
-  if (response.status === 401) response = await send(await token(sdk));
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    let message = `${response.status}`;
-    try {
-      message = (JSON.parse(text) as { error?: string }).error ?? message;
-    } catch {
-      /* keep status text */
-    }
-    throw new Error(message);
+/**
+ * Every request is self-signed with this browser's key, so there is no login and
+ * no token: the address in `x-exe-address` is the identity. A retry re-signs with
+ * a fresh nonce and timestamp, which is what a rejected replay or a moved clock
+ * needs.
+ */
+async function send(path: string, init: RequestInit): Promise<Response> {
+  const identity = await localIdentity();
+  const url = `${API_BASE}${path}`;
+  // The signature covers the pathname only, so sign the one the worker will see.
+  const { pathname } = new URL(url, window.location.origin);
+  return fetch(url, {
+    ...init,
+    headers: {
+      ...(init.body ? { "content-type": "application/json" } : {}),
+      ...(init.headers ?? {}),
+      ...requestHeaders(identity, init.method ?? "GET", pathname),
+    },
+  });
+}
+
+async function message(response: Response): Promise<string> {
+  const text = await response.text().catch(() => "");
+  try {
+    return (JSON.parse(text) as { error?: string }).error ?? `${response.status}`;
+  } catch {
+    return `${response.status}`;
   }
+}
+
+export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+  let response = await send(path, init);
+  if (response.status === 401) response = await send(path, init);
+  if (!response.ok) throw new Error(await message(response));
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
@@ -60,7 +63,6 @@ export interface DeviceView {
   online: boolean;
   last_seen_at: number | null;
   created_at: number;
-  revoked_at: number | null;
 }
 
 export interface CallView {
@@ -76,10 +78,9 @@ export interface CallView {
   has_result: boolean;
 }
 
+/** The relay only ever knows this browser as an address. */
 export interface Me {
-  account_id: string;
-  registered: boolean;
-  address: string | null;
+  address: string;
   custody: "browser";
 }
 

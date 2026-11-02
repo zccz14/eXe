@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import vectors from "./vectors.json" with { type: "json" };
 import {
-  accountPayload,
-  accountTranscript,
   addressOf,
   agreementPublic,
   agreementSecret,
@@ -26,11 +24,9 @@ import {
   requestTranscript,
   resultTranscript,
   sha256Hex,
-  signAccount,
   signCall,
   unb58,
   unhex,
-  verifyAccount,
   verifyCall,
   verifyRequest,
   verifyResult,
@@ -154,18 +150,6 @@ test("device requests are self-signed over method, path, address, time and nonce
   assert.equal(verifyRequest({ ...auth, path: auth.path.replace("/result", "/received") }, vectors.request.sig), false);
   assert.equal(verifyRequest({ ...auth, timestamp: auth.timestamp + 1 }, vectors.request.sig), false);
   assert.equal(verifyRequest({ ...auth, nonce: b64u(new Uint8Array(16)) }, vectors.request.sig), false);
-});
-
-test("account registration proves the browser holds the key", () => {
-  const fields = {
-    address: vectors.account.address,
-    userId: vectors.account.userId,
-    nonce: vectors.account.nonce,
-    issuedAt: vectors.account.issuedAt,
-  };
-  assert.equal(sha256Hex(accountTranscript(fields)), vectors.account.transcript_sha256);
-  assert.ok(verifyAccount(fields, vectors.account.sig));
-  assert.equal(verifyAccount({ ...fields, userId: "44444444-4444-4444-8444-444444444444" }, vectors.account.sig), false);
   assert.equal(JSON.stringify(vectors).match(/seed32|private/i), null, "vectors carry seeds for testing only, never secrets from production");
 });
 
@@ -216,23 +200,4 @@ test("a result built after the fact cannot be swapped between calls", () => {
   assert.equal(openResult({ seed: issuer.seed, call, result }), '{"ok":false,"code":"spawn_failed"}');
   const other = { ...call, call_id: "22222222-2222-4222-8222-222222222222", expires_at: call.expires_at + 60 };
   assert.throws(() => openResult({ seed: issuer.seed, call: other, result }), "aAD binds the result to the call");
-});
-
-test("the account registration body matches what the relay parses", () => {
-  const fields = {
-    address: vectors.call.issuer,
-    userId: "031a393d-8a0a-4ca0-8cb1-313e0d71dfa9",
-    nonce: b64u(new Uint8Array(24).fill(7)),
-    issuedAt: 1_700_000_000,
-  };
-  const payload = accountPayload(fields, signAccount(issuer.seed, fields));
-  // The relay reads `issued_at` as a number and never looks for `userId`: the
-  // access token already carries it. A camelCase body fails with
-  // "issued_at is invalid", which is exactly how the console broke.
-  assert.deepEqual(Object.keys(payload).sort(), ["address", "issued_at", "nonce", "sig"]);
-  assert.equal(typeof payload.issued_at, "number");
-  assert.equal(payload.issued_at, fields.issuedAt);
-  assert.equal(payload.nonce, fields.nonce);
-  assert.equal(payload.address, fields.address);
-  assert.equal(verifyAccount(fields, payload.sig), true);
 });

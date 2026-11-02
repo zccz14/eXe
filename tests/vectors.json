@@ -25,8 +25,7 @@
     "plaintext": "{\"ok\":true,\"output\":{\"text\":\"hello eXe\"}}",
     "sealed": "DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMUKYUCbHd0DJemxa3AOcZ6XcsBwALG9d4bpB8ZT0gSV0UT0J4CHFy4DjuSoZAl8IV4Z4Pp2DLFfYxwYhvZhdm0yA60FtPmfwCje6TW-D0v7ILCwsLCwsLCwsLCwuPgrFmYBVPlGLMiB2TouXolaf0p7WtM_06FGX1U-9Rzd9qtxqdMveVp7wrjg5_A3FFofv_psUJpeE",
     "transcript_sha256": "6c8b6a82de6df8e0e185f665f1e70ec6508e959799ea8093c31347be8af41309",
-    "sig": "2t6wGbwRk1b2hkowo9XfMMK2XwSyee9w72oG9TCCxG1Cn8swpiy4o5UuByYr7neZYyFJnZUCZh8bxZESuaL1vKAL",
-    "resign": "2t6wGbwRk1b2hkowo9XfMMK2XwSyee9w72oG9TCCxG1Cn8swpiy4o5UuByYr7neZYyFJnZUCZh8bxZESuaL1vKAL"
+    "sig": "2t6wGbwRk1b2hkowo9XfMMK2XwSyee9w72oG9TCCxG1Cn8swpiy4o5UuByYr7neZYyFJnZUCZh8bxZESuaL1vKAL"
   },
   "request": {
     "method": "POST",
@@ -36,13 +35,5 @@
     "nonce": "DQ0NDQ0NDQ0NDQ0NDQ0NDQ",
     "transcript_sha256": "c268015ad965e161ae164b71ecddd793912ed1a0b7c5f0d29a697128f82a58a5",
     "sig": "5WEQTWRxY1BHWGQ7msrmkVyquLzAxKckt9Yb8V4Schb48oTWRRKqAhrw5qMqTtvruXtxbQhbqDQaGoDhcvWXXX75"
-  },
-  "account": {
-    "address": "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9",
-    "userId": "33333333-3333-4333-8333-333333333333",
-    "nonce": "Dg4ODg4ODg4ODg4ODg4ODg",
-    "issuedAt": 1700000000,
-    "transcript_sha256": "b5ee6740f71872ba40ea92429f54c9784f4e9669708a364d9be752bd0aed0e25",
-    "sig": "285kubAay8nmycVjAhzyftxiNPS1jjhUSEdHkEd6afB66ZLddyBEsSjB16LLb6381JK8DjbHVHvfa2dhXfvZRLc8"
   }
 }

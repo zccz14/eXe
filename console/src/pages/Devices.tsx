@@ -1,17 +1,61 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useAuthMini } from "auth-mini-react-components";
-import { ChevronRightIcon, PlusIcon, TerminalIcon } from "lucide-react";
+import { CheckIcon, ChevronRightIcon, CopyIcon, FingerprintIcon, PlusIcon, TerminalIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { api, type DeviceView } from "../api";
+import { api, type DeviceView, type Me } from "../api";
 import { DownloadCard } from "../components/DownloadCard";
 import { useCopy } from "../i18n";
 import { Badge, Button, Card, Input, Stat } from "../ui";
 
+/** The address a device has to trust; it is the only thing this browser is. */
+function ConsoleAddressCard() {
+  const t = useCopy();
+  const [copied, setCopied] = useState(false);
+  const me = useQuery({ queryKey: ["me"], queryFn: () => api<Me>("/api/me"), retry: 0 });
+  const address = me.data?.address;
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
+  return (
+    <Card className="space-y-3">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <FingerprintIcon className="size-4" />
+        {t("console_address")}
+      </div>
+      <p className="text-sm text-muted-foreground">{t("console_address_body")}</p>
+      {me.isError ? (
+        <p className="text-sm text-destructive">{t("relay_unreachable")}</p>
+      ) : (
+        <>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <code className="min-w-0 flex-1 truncate rounded-md bg-muted px-3 py-2 font-mono text-xs">{address ?? "…"}</code>
+            <Button
+              variant="outline"
+              className="shrink-0"
+              disabled={!address}
+              onClick={() => {
+                if (!address) return;
+                void navigator.clipboard.writeText(address).then(() => setCopied(true));
+              }}
+            >
+              {copied ? <CheckIcon className="size-4" /> : <CopyIcon className="size-4" />}
+              {copied ? t("copied") : t("copy")}
+            </Button>
+          </div>
+          {address && <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs">exe trust {address}</pre>}
+        </>
+      )}
+    </Card>
+  );
+}
+
 export function DevicesPage() {
   const t = useCopy();
   const navigate = useNavigate();
-  const { sdk } = useAuthMini();
   const queryClient = useQueryClient();
   const [address, setAddress] = useState("");
   const [label, setLabel] = useState("");
@@ -19,14 +63,14 @@ export function DevicesPage() {
 
   const devices = useQuery({
     queryKey: ["devices"],
-    queryFn: () => api<{ devices: DeviceView[] }>(sdk as never, "/api/devices"),
+    queryFn: () => api<{ devices: DeviceView[] }>("/api/devices"),
     refetchInterval: 5000,
   });
   const list = devices.data?.devices ?? [];
 
   const add = useMutation({
     mutationFn: () =>
-      api<{ device: DeviceView }>(sdk as never, "/api/devices", {
+      api<{ device: DeviceView }>("/api/devices", {
         method: "POST",
         body: JSON.stringify({ address: address.trim(), label: label.trim() || undefined }),
       }),
@@ -47,6 +91,8 @@ export function DevicesPage() {
       </header>
 
       <DownloadCard />
+
+      <ConsoleAddressCard />
 
       <Card className="space-y-3">
         <div className="flex items-center gap-2 text-sm font-medium">
@@ -104,13 +150,7 @@ export function DevicesPage() {
               <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" />
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              {device.revoked_at ? (
-                <Badge tone="bad">{t("revoked")}</Badge>
-              ) : device.online ? (
-                <Badge tone="ok">{t("online")}</Badge>
-              ) : (
-                <Badge tone="muted">{t("offline")}</Badge>
-              )}
+              {device.online ? <Badge tone="ok">{t("online")}</Badge> : <Badge tone="muted">{t("offline")}</Badge>}
               {device.platform && <Badge>{device.platform}</Badge>}
             </div>
             <Stat label={t("last_seen")} value={device.last_seen_at ? new Date(device.last_seen_at * 1000).toLocaleString() : "—"} />

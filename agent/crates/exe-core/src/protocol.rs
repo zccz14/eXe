@@ -210,28 +210,6 @@ pub fn verify_request(
     verify(&identity.public(), &auth.transcript(), signature).map_err(|_| VerifyError::Signature)
 }
 
-/// Account registration: proves the browser holds the key behind an address.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[allow(non_snake_case)]
-pub struct AccountFields {
-    pub address: String,
-    pub userId: String,
-    pub nonce: String,
-    pub issuedAt: u64,
-}
-
-impl AccountFields {
-    pub fn transcript(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(160);
-        out.extend_from_slice(b"eXe/account\0");
-        push_lp(&mut out, self.address.as_bytes());
-        push_lp(&mut out, self.userId.as_bytes());
-        push_lp(&mut out, self.nonce.as_bytes());
-        push_u64(&mut out, self.issuedAt);
-        out
-    }
-}
-
 pub fn address_of_public(public: &[u8; 32]) -> String {
     b58(public)
 }
@@ -399,9 +377,8 @@ mod tests {
     }
 
     #[test]
-    fn request_and_account_vectors() {
+    fn request_vectors() {
         let v = vector();
-        let issuer = seed(v["keys"]["issuer_seed"].as_str().unwrap());
         let device = seed(v["keys"]["device_seed"].as_str().unwrap());
 
         let auth = RequestAuth {
@@ -417,22 +394,5 @@ mod tests {
         );
         verify_request(&device, &auth, v["request"]["sig"].as_str().unwrap())
             .expect("device request verifies");
-
-        let account = AccountFields {
-            address: v["account"]["address"].as_str().unwrap().into(),
-            userId: v["account"]["userId"].as_str().unwrap().into(),
-            nonce: v["account"]["nonce"].as_str().unwrap().into(),
-            issuedAt: v["account"]["issuedAt"].as_u64().unwrap(),
-        };
-        assert_eq!(
-            sha256_hex(&account.transcript()),
-            v["account"]["transcript_sha256"].as_str().unwrap()
-        );
-        verify(
-            &issuer.public(),
-            &account.transcript(),
-            v["account"]["sig"].as_str().unwrap(),
-        )
-        .expect("account registration verifies");
     }
 }

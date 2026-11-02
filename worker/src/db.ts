@@ -6,23 +6,14 @@ import { ApiError, now } from "./http.ts";
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
-  AUTH_ISSUER: string;
-  AUTH_AUDIENCE: string;
   /** Comma-separated origins allowed to call the console API from another origin. */
   CONSOLE_ORIGINS?: string;
   /** owner/name of the repository whose GitHub Releases carry the client binaries. */
   GITHUB_REPO?: string;
 }
 
-/** Everything a signed device request may be used for: five minutes either way. */
+/** Everything a signed request may be used for: five minutes either way. */
 export const REQUEST_WINDOW_SECONDS = 300;
-
-export interface AccountRow {
-  user_id: string;
-  address: string;
-  created_at: number;
-  updated_at: number;
-}
 
 export interface AgentRow {
   address: string;
@@ -34,17 +25,17 @@ export interface AgentRow {
 }
 
 export interface DeviceRow {
+  /** The console that keeps this device in its own address book. */
+  owner_address: string;
   address: string;
-  owner_user_id: string;
   label: string;
   created_at: number;
-  revoked_at: number | null;
 }
 
 export interface CallRow {
   call_id: string;
   device_address: string;
-  owner_user_id: string;
+  /** The console that signed it: issuer *is* the owner, so there is no second column. */
   issuer: string;
   sealed: string;
   sig: string;
@@ -60,13 +51,9 @@ export interface CallRow {
   created_at: number;
 }
 
-export async function accountByUser(env: Env, userId: string): Promise<AccountRow | null> {
-  return env.DB.prepare("SELECT * FROM accounts WHERE user_id=?").bind(userId).first<AccountRow>();
-}
-
-export async function deviceByAddress(env: Env, userId: string, address: string): Promise<DeviceRow | null> {
-  return env.DB.prepare("SELECT * FROM devices WHERE owner_user_id=? AND address=?")
-    .bind(userId, address)
+export async function deviceByAddress(env: Env, owner: string, address: string): Promise<DeviceRow | null> {
+  return env.DB.prepare("SELECT * FROM devices WHERE owner_address=? AND address=?")
+    .bind(owner, address)
     .first<DeviceRow>();
 }
 
@@ -102,32 +89,25 @@ export async function touchAgent(env: Env, address: string, info?: AgentInfo): P
   await env.DB.prepare("UPDATE agents SET last_seen_at=? WHERE address=?").bind(stamp, address).run();
 }
 
-export interface RequestAuthInput {
-  request: Request;
-  env: Env;
-  address: string;
-}
-
 /**
- * Every device request carries its own Ed25519 signature over method, path,
- * address, timestamp and a single-use nonce. There is no bearer token to steal:
- * a captured request dies with its nonce.
+ * Every request carries its own Ed25519 signature over method, path, address,
+ * timestamp and a single-use nonce. There is no bearer token to steal: a
+ * captured request dies with its nonce. Devices and the console use the same
+ * scheme; they only disagree on where the address travels.
  */
-export async function authenticateDevice(input: RequestAuthInput): Promise<void> {
-  const { request, env, address } = input;
-  if (!isAddress(address)) throw new ApiError(404, "unknown agent");
+async function verifySelfSigned(env: Env, request: Request, address: string): Promise<void> {
   const timestamp = Number(request.headers.get("x-exe-timestamp") ?? "");
   const nonce = request.headers.get("x-exe-nonce") ?? "";
   const signature = request.headers.get("x-exe-signature") ?? "";
-  if (!Number.isInteger(timestamp) || timestamp <= 0) throw new ApiError(401, "missing device timestamp");
-  if (nonce.length < 16 || nonce.length > 64) throw new ApiError(401, "missing device nonce");
-  if (!signature) throw new ApiError(401, "missing device signature");
+  if (!Number.isInteger(timestamp) || timestamp <= 0) throw new ApiError(401, "missing request timestamp");
+  if (nonce.length < 16 || nonce.length > 64) throw new ApiError(401, "missing request nonce");
+  if (!signature) throw new ApiError(401, "missing request signature");
   const skew = Math.abs(now() - timestamp);
-  if (skew > REQUEST_WINDOW_SECONDS) throw new ApiError(401, "device clock is outside the accepted window");
+  if (skew > REQUEST_WINDOW_SECONDS) throw new ApiError(401, "clock is outside the accepted window");
 
   const path = new URL(request.url).pathname;
   if (!verifyRequest({ method: request.method, path, address, timestamp, nonce }, signature)) {
-    throw new ApiError(401, "device signature does not verify");
+    throw new ApiError(401, "request signature does not verify");
   }
 
   const claimed = await env.DB.prepare(
@@ -141,4 +121,21 @@ export async function authenticateDevice(input: RequestAuthInput): Promise<void>
   if (Math.random() < 0.05) {
     await env.DB.prepare("DELETE FROM request_nonces WHERE expires_at < ?").bind(now()).run();
   }
+}
+
+/** A device: the address is the path segment `/v1/agents/{address}`. */
+export async function authenticateDevice(input: { request: Request; env: Env; address: string }): Promise<void> {
+  if (!isAddress(input.address)) throw new ApiError(404, "unknown agent");
+  await verifySelfSigned(input.env, input.request, input.address);
+}
+
+/**
+ * The console: same signature, address in a header. It returns the address
+ * because that address *is* the identity — there is no account behind it.
+ */
+export async function authenticateConsole(request: Request, env: Env): Promise<string> {
+  const address = request.headers.get("x-exe-address") ?? "";
+  if (!isAddress(address)) throw new ApiError(401, "this request names no console address");
+  await verifySelfSigned(env, request, address);
+  return address;
 }

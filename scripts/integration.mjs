@@ -1,10 +1,8 @@
-// End-to-end check against a local worker: self-registration, signed requests,
-// sealed call over SSE, sealed result, and proof that the relay never holds
-// anything it could sign with or read.
+// End-to-end check against a local worker: self-signed console requests, self-signed
+// device requests, a sealed call over SSE, a sealed result, and proof that the relay
+// never holds anything it could sign with or read.
 import { spawn, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { startJwks } from "./jwks.mjs";
 import { makeBrowser, now, signedHeaders } from "./browser.mjs";
 import {
   addressOf,
@@ -19,12 +17,6 @@ import {
 
 const PORT = 8787;
 const base = `http://127.0.0.1:${PORT}`;
-const jwks = startJwks(8788);
-
-function writeDevVars() {
-  const text = `AUTH_ISSUER=${jwks.url}\nAUTH_AUDIENCE=exe.test\n`;
-  spawnSync("bash", ["-c", `printf '%s' '${text}' > .dev.vars`], { stdio: "inherit" });
-}
 
 async function waitForWorker() {
   for (let attempt = 0; attempt < 120; attempt += 1) {
@@ -39,9 +31,8 @@ async function waitForWorker() {
 }
 
 async function main() {
-  writeDevVars();
   spawnSync("npx", ["wrangler", "d1", "execute", "exe", "--local", "--command",
-    "DROP TABLE IF EXISTS calls; DROP TABLE IF EXISTS devices; DROP TABLE IF EXISTS agents; DROP TABLE IF EXISTS accounts; DROP TABLE IF EXISTS account_challenges; DROP TABLE IF EXISTS request_nonces;"],
+    "DROP TABLE IF EXISTS calls; DROP TABLE IF EXISTS devices; DROP TABLE IF EXISTS agents; DROP TABLE IF EXISTS request_nonces;"],
     { stdio: "ignore" });
   spawnSync("npx", ["wrangler", "d1", "execute", "exe", "--local", "--file", "worker/src/schema.sql"], { stdio: "inherit" });
   const dev = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--ip", "127.0.0.1"], {
@@ -58,7 +49,6 @@ async function main() {
     } catch {
       dev.kill("SIGKILL");
     }
-    void jwks.close();
   };
   try {
     await waitForWorker();
@@ -84,29 +74,37 @@ async function run() {
   const unknownAsset = await fetch(`${base}/download/definitely-not-an-asset`);
   assert.equal(unknownAsset.status, 404, "only assets of the latest release are downloadable");
 
-  // --- the browser owns the only account key ------------------------------
-  const userId = randomUUID();
-  const auth = { authorization: `Bearer ${jwks.mint(userId)}` };
+  // --- the browser is the identity: a signature, not a login ---------------
   const browser = makeBrowser();
+  const me = await browser.request(base, "GET", "/api/me");
+  assert.equal(me.address, browser.address, "the relay knows this browser by its address");
+  assert.equal(me.custody, "browser");
+  assert.equal(JSON.stringify(me).match(/secret|seed|token|jwt/i), null, "nothing to steal from the answer");
 
-  const meBefore = await fetch(`${base}/api/me`, { headers: auth }).then((r) => r.json());
-  assert.equal(meBefore.registered, false);
-  assert.equal(meBefore.custody, "browser");
-  assert.equal((await fetch(`${base}/api/devices`, { headers: auth })).status, 200, "listing devices needs no key");
+  assert.equal((await fetch(`${base}/api/devices`)).status, 401, "no signature, no console API");
+  assert.equal((await fetch(`${base}/api/me`, { headers: { authorization: `Bearer anything` } })).status, 401, "a bearer token means nothing here");
 
-  await browser.register(base, auth);
-  const me = await fetch(`${base}/api/me`, { headers: auth }).then((r) => r.json());
-  assert.equal(me.address, browser.address);
-  assert.equal(JSON.stringify(me).match(/secret|seed|sig_sk/i), null, "the relay never reports private material");
+  // The address in `x-exe-address` must be the address that signed.
+  const impostor = makeBrowser();
+  const stolen = signedHeaders(browser.identity, "GET", "/api/devices");
+  const impersonation = await fetch(`${base}/api/devices`, {
+    headers: { ...stolen, "x-exe-address": impostor.address },
+  });
+  assert.equal(impersonation.status, 401, "a header cannot name an address it cannot sign for");
+
+  // A captured console request dies with its nonce, exactly like a device one.
+  const replayable = signedHeaders(browser.identity, "GET", "/api/devices");
+  assert.equal((await fetch(`${base}/api/devices`, { headers: replayable })).status, 200);
+  assert.equal((await fetch(`${base}/api/devices`, { headers: replayable })).status, 401, "a captured request cannot be replayed");
 
   // --- a device is added by address; there is nothing to pair --------------
   const device = newIdentity();
   const deviceAddress = addressOf(device);
-  const added = await browser.addDevice(base, auth, deviceAddress, "integration");
+  const added = await browser.addDevice(base, deviceAddress, "integration");
   assert.equal(added.device.address, deviceAddress);
   assert.equal(added.device.online, false);
   assert.equal(added.device.hostname, null, "the relay knows nothing about it yet");
-  const devices = await fetch(`${base}/api/devices`, { headers: auth }).then((r) => r.json());
+  const devices = await browser.request(base, "GET", "/api/devices");
   assert.equal(devices.devices.length, 1);
 
   // --- the device self-registers: one signed request, single-use nonce -----
@@ -152,7 +150,7 @@ async function run() {
   });
   assert.equal(unsigned.status, 401, "self-registration needs the device key");
 
-  const online = await fetch(`${base}/api/devices`, { headers: auth }).then((r) => r.json());
+  const online = await browser.request(base, "GET", "/api/devices");
   assert.equal(online.devices[0].online, true);
   assert.equal(online.devices[0].hostname, "integration-host");
 
@@ -187,7 +185,7 @@ async function run() {
   await nextEvent("hello");
 
   // --- a signed call the device alone can open ----------------------------
-  const created = await browser.call(base, auth, deviceAddress, "echo", { text: "hello eXe" });
+  const created = await browser.call(base, deviceAddress, "echo", { text: "hello eXe" });
   const callId = created.call.call_id;
   const delivered = await nextEvent("call");
   assert.equal(delivered.call_id, callId);
@@ -204,29 +202,27 @@ async function run() {
   forged.sealed = b64u(new Uint8Array(160));
   const tampered = await fetch(`${base}/api/devices/${deviceAddress}/calls`, {
     method: "POST",
-    headers: { ...auth, "content-type": "application/json" },
+    headers: { ...signedHeaders(browser.identity, "POST", `/api/devices/${deviceAddress}/calls`), "content-type": "application/json" },
     body: JSON.stringify(forged),
   });
   assert.equal(tampered.status, 403);
 
-  const unsolicited = await fetch(`${base}/api/devices/${deviceAddress}/calls`, {
+  const unsignedCall = await fetch(`${base}/api/devices/${deviceAddress}/calls`, {
     method: "POST",
-    headers: { ...auth, "content-type": "application/json" },
+    headers: { ...signedHeaders(browser.identity, "POST", `/api/devices/${deviceAddress}/calls`), "content-type": "application/json" },
     body: JSON.stringify({ name: "echo", args: "{}" }),
   });
-  assert.equal(unsolicited.status, 400);
+  assert.equal(unsignedCall.status, 400);
 
-  // Another account may keep the same address in its own book: the relay routes
+  // Another console may keep the same address in its own book: the relay routes
   // but does not decide trust. What stops it is the device's trust list.
   const stranger = makeBrowser();
-  const strangerAuth = { authorization: `Bearer ${jwks.mint(randomUUID())}` };
-  await stranger.register(base, strangerAuth);
-  await stranger.addDevice(base, strangerAuth, deviceAddress, "not mine");
+  await stranger.addDevice(base, deviceAddress, "not mine");
   const strangerCall = stranger.signCall(deviceAddress, "echo", { text: "from a stranger" });
   assert.ok(verifyCall(strangerCall), "the stranger's envelope is well formed");
   const strangerQueued = await fetch(`${base}/api/devices/${deviceAddress}/calls`, {
     method: "POST",
-    headers: { ...strangerAuth, "content-type": "application/json" },
+    headers: { ...signedHeaders(stranger.identity, "POST", `/api/devices/${deviceAddress}/calls`), "content-type": "application/json" },
     body: JSON.stringify(strangerCall),
   });
   assert.equal(strangerQueued.status, 200, "the relay only queues what the sender signed");
@@ -276,34 +272,37 @@ async function run() {
   assert.equal(conflict.status, 409, "a different outcome for a settled call is refused");
 
   // --- only the issuing browser can read it --------------------------------
-  const detail = await fetch(`${base}/api/calls/${callId}`, { headers: auth }).then((r) => r.json());
+  const detail = await browser.request(base, "GET", `/api/calls/${callId}`);
   assert.equal(detail.call.status, "succeeded");
   assert.equal(detail.call.has_result, true);
   assert.ok(detail.result, "the envelope is returned verbatim");
   assert.equal(JSON.stringify(detail).includes("SEALED-MARKER-42"), false, "no plaintext in the API");
   assert.deepEqual(browser.open(detail.call, detail.result), JSON.parse(plaintext));
   assert.throws(() => stranger.open(detail.call, detail.result), "another browser cannot open the envelope");
+  await assert.rejects(stranger.request(base, "GET", `/api/calls/${callId}`), /404/, "and cannot even fetch it");
+  const strangerList = await stranger.request(base, "GET", `/api/calls?device=${deviceAddress}`);
+  assert.equal(strangerList.calls.some((call) => call.call_id === callId), false, "a call belongs to the console that signed it");
+  assert.equal(strangerList.calls.length, 1, "the stranger sees only its own call");
 
-  const stored = await fetch(`${base}/api/calls?device=${deviceAddress}`, { headers: auth }).then((r) => r.json());
+  const stored = await browser.request(base, "GET", `/api/calls?device=${deviceAddress}`);
   assert.equal(stored.calls.length, 1);
   assert.equal(JSON.stringify(stored).includes("SEALED-MARKER-42"), false);
 
   // --- cancelling something that was never delivered -----------------------
   const idle = newIdentity();
   const idleAddress = addressOf(idle);
-  await browser.addDevice(base, auth, idleAddress, "idle");
-  const pending = await browser.call(base, auth, idleAddress, "sleep", { seconds: 5 });
-  const cancelled = await fetch(`${base}/api/calls/${pending.call.call_id}/cancel`, { method: "POST", headers: auth });
-  assert.equal(cancelled.status, 204);
-  const cancelledView = await fetch(`${base}/api/calls/${pending.call.call_id}`, { headers: auth }).then((r) => r.json());
+  await browser.addDevice(base, idleAddress, "idle");
+  const pending = await browser.call(base, idleAddress, "sleep", { seconds: 5 });
+  const cancelled = await browser.request(base, "POST", `/api/calls/${pending.call.call_id}/cancel`);
+  assert.equal(cancelled, null);
+  const cancelledView = await browser.request(base, "GET", `/api/calls/${pending.call.call_id}`);
   assert.equal(cancelledView.call.status, "cancelled");
 
   // --- removing a device stops new calls -----------------------------------
-  const removed = await fetch(`${base}/api/devices/${idleAddress}`, { method: "DELETE", headers: auth });
-  assert.equal(removed.status, 204);
+  assert.equal(await browser.request(base, "DELETE", `/api/devices/${idleAddress}`), null);
   const blocked = await fetch(`${base}/api/devices/${idleAddress}/calls`, {
     method: "POST",
-    headers: { ...auth, "content-type": "application/json" },
+    headers: { ...signedHeaders(browser.identity, "POST", `/api/devices/${idleAddress}/calls`), "content-type": "application/json" },
     body: JSON.stringify(browser.signCall(idleAddress, "echo", {})),
   });
   assert.equal(blocked.status, 404);

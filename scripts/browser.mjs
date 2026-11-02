@@ -1,64 +1,45 @@
-// Emulates the console: holds the only copy of the account key, signs calls and
-// opens results. Nothing here ever reaches the relay in the clear.
+// Emulates the console: holds the only copy of its key, signs every request, and
+// signs calls. Nothing here ever reaches the relay in the clear.
 import {
-  accountPayload,
   addressOf,
-  b64u,
   buildCall,
   newIdentity,
   openResult,
-  randomBytes,
-  signAccount,
-  signRequest,
+  requestHeaders,
   verifyCall,
 } from "../shared/protocol.ts";
 
 export const now = () => Math.floor(Date.now() / 1000);
 
-/** Signed headers for a device request: no bearer token exists. */
+/** Signed headers for a relay request: devices put the address in the path, the console in a header. */
 export function signedHeaders(identity, method, path) {
-  const auth = {
-    method,
-    path,
-    address: addressOf(identity),
-    timestamp: now(),
-    nonce: b64u(randomBytes(16)),
-  };
-  return {
-    "x-exe-timestamp": String(auth.timestamp),
-    "x-exe-nonce": auth.nonce,
-    "x-exe-signature": signRequest(identity.seed, auth),
-  };
+  return requestHeaders(identity, method, path);
 }
 
 export function makeBrowser() {
   const identity = newIdentity();
   const address = addressOf(identity);
 
+  /** One self-signed console request. `path` may carry a query; only the pathname is signed. */
+  async function request(base, method, path, body) {
+    const pathname = path.split("?")[0];
+    const response = await fetch(`${base}${path}`, {
+      method,
+      headers: {
+        ...signedHeaders(identity, method, pathname),
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`${method} ${pathname} failed: ${response.status} ${await response.text()}`);
+    return response.status === 204 ? null : response.json();
+  }
+
   return {
     identity,
     address,
-    async register(base, auth) {
-      const me = await fetch(`${base}/api/me`, { headers: auth }).then((r) => r.json());
-      const challenge = await fetch(`${base}/api/account/challenge`, { headers: auth }).then((r) => r.json());
-      const fields = { address, userId: me.account_id, nonce: challenge.nonce, issuedAt: now() };
-      const response = await fetch(`${base}/api/account`, {
-        method: "PUT",
-        headers: { ...auth, "content-type": "application/json" },
-        body: JSON.stringify(accountPayload(fields, signAccount(identity.seed, fields))),
-      });
-      if (!response.ok) throw new Error(`account registration failed: ${response.status} ${await response.text()}`);
-      return response.json();
-    },
-    async addDevice(base, auth, deviceAddress, label) {
-      const response = await fetch(`${base}/api/devices`, {
-        method: "POST",
-        headers: { ...auth, "content-type": "application/json" },
-        body: JSON.stringify({ address: deviceAddress, label }),
-      });
-      if (!response.ok) throw new Error(`adding the device failed: ${response.status} ${await response.text()}`);
-      return response.json();
-    },
+    request,
+    addDevice: (base, deviceAddress, label) => request(base, "POST", "/api/devices", { address: deviceAddress, label }),
     signCall(deviceAddress, name, args, ttl = 300) {
       const issuedAt = now();
       return buildCall({
@@ -72,15 +53,8 @@ export function makeBrowser() {
         expiresAt: issuedAt + ttl,
       });
     },
-    async call(base, auth, deviceAddress, name, args) {
-      const envelope = this.signCall(deviceAddress, name, args);
-      const response = await fetch(`${base}/api/devices/${deviceAddress}/calls`, {
-        method: "POST",
-        headers: { ...auth, "content-type": "application/json" },
-        body: JSON.stringify(envelope),
-      });
-      if (!response.ok) throw new Error(`call failed: ${response.status} ${await response.text()}`);
-      return response.json();
+    async call(base, deviceAddress, name, args) {
+      return request(base, "POST", `/api/devices/${deviceAddress}/calls`, this.signCall(deviceAddress, name, args));
     },
     open(call, result) {
       return JSON.parse(openResult({ seed: identity.seed, call, result }));

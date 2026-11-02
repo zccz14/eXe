@@ -1,6 +1,55 @@
 @import "tailwindcss";
-@import "@zccz14/ux/styles.css";
-@import "linkit-react-components/styles.css";
+
+/*
+ * The console is one static page with no theme switch, so the palette follows the
+ * OS. These are the shadcn tokens the components are written against; Tailwind
+ * v4 only generates `bg-background` and friends when they exist here.
+ */
+:root {
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --border: #e2e8f0;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --accent: #f1f5f9;
+  --accent-foreground: #0f172a;
+  --destructive: #dc2626;
+  --ring: #2563eb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --background: #0b0b0c;
+    --foreground: #f2f2f2;
+    --card: #141416;
+    --card-foreground: #f2f2f2;
+    --border: #2c2c30;
+    --muted: #1e1e21;
+    --muted-foreground: #a3a3a3;
+    --accent: #26262a;
+    --accent-foreground: #f2f2f2;
+    --destructive: #f87171;
+    --ring: #d4d4d4;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-ring: var(--ring);
+}
 
 @theme {
   --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
@@ -10,4 +59,9 @@ html,
 body,
 #root {
   height: 100%;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
 }
