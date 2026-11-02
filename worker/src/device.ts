@@ -17,11 +17,12 @@ const DEVICE_OFFLINE_SECONDS = 90;
 const RESEND_AFTER_SECONDS = 120;
 const PENDING_LIMIT = 16;
 /**
- * A result travels in one request and lives in one D1 row, next to the call's own
- * envelope (up to 64 KiB). A row is capped at 2 MB by D1, so the body cap leaves
- * room for that envelope instead of discovering the ceiling as a 500.
+ * An inline result is a summary plus a preview — the device attaches anything
+ * larger — so this cap is a guard, not a budget. It stays above 512 KiB because
+ * clients released before attachments existed still answer inline at 256 KiB,
+ * and a device must never be broken by a relay change.
  */
-const MAX_RESULT_BODY = 1_900_000;
+const MAX_RESULT_BODY = 512 * 1024;
 /** A device may attach more than a row could hold, but not without bound. */
 const MAX_BLOB_BYTES = 16 * 1024 * 1024;
 /** A device never needs to trust more issuers than this. */

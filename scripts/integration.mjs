@@ -425,15 +425,24 @@ async function run() {
     return response.status;
   };
 
-  // 1.35 MB is inside the budget, and it comes back byte for byte.
+  // A small result is inline and comes back byte for byte.
   const big = browser.signCall(bulkAddress, "shell", { command: "printf big" });
   assert.equal((await issue(big)).status, 200);
-  const bigText = "y".repeat(1_350_000);
-  assert.equal(await settleBulk(big, JSON.stringify({ ok: true, output: { tool: "shell", stdout: bigText } })), 204);
+  assert.equal(await settleBulk(big, JSON.stringify({ ok: true, output: { tool: "shell", stdout: "y".repeat(40_000) } })), 204);
   const bigDetail = await browser.request(base, "GET", `/api/calls/${big.call_id}`);
-  assert.equal(browser.open(bigDetail.call, bigDetail.result).output.stdout.length, 1_350_000, "a megabyte-scale result survives its row");
+  assert.equal(browser.open(bigDetail.call, bigDetail.result).output.stdout.length, 40_000, "a small result survives its row");
+  assert.equal(bigDetail.call.blob_bytes, null, "and needs no attachment");
 
-  // Beyond that the row would not fit; the relay says so instead of failing on insert.
+  // The guard still admits what already-released clients send (256 KiB inline).
+  const legacy = browser.signCall(bulkAddress, "shell", { command: "printf legacy" });
+  assert.equal((await issue(legacy)).status, 200);
+  assert.equal(
+    await settleBulk(legacy, JSON.stringify({ ok: true, output: { tool: "shell", stdout: "w".repeat(300_000) } })),
+    204,
+    "a client released before attachments must keep working",
+  );
+
+  // Past the inline guard the relay says so, instead of failing on insert.
   const tooBig = browser.signCall(bulkAddress, "shell", { command: "printf huge" });
   assert.equal((await issue(tooBig)).status, 200);
   assert.equal(

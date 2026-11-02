@@ -18,24 +18,53 @@ type Tasks = Arc<Mutex<HashMap<String, JoinHandle<()>>>>;
 /// repeat is answered from memory instead of running the tool twice.
 const REMEMBERED_RESULTS: usize = 256;
 
-/// A result that fits here travels inside the row the relay stores it in. Past
-/// that the relay would have to refuse it (D1 caps a row at 2 MB), so the device
-/// uploads the sealed payload as an attachment and the row keeps only a reference
-/// — the same shape an object store gives a large file.
-const INLINE_RESULT_BYTES: usize = 1_400_000;
+/// What travels back inline. This is a reader's budget, not a storage one: a
+/// result is meant to land in a model's context, where a few tens of kilobytes
+/// is already a lot to read. Anything past this is attached and stays one click
+/// away, so the inline path never has to grow with the database.
+const INLINE_RESULT_BYTES: usize = 64 * 1024;
 
-/// What the row says instead of the bytes: the outcome plus a pointer. `blob`
-/// carries either the attachment's size or the reason there is none.
+/// A truncated answer still shows its head: most commands say what matters in
+/// the first screen, and a pointer with no preview forces a round trip to learn
+/// anything at all. stdout gets the room; stderr only needs to be enough to see
+/// the error.
+const PREVIEW_BYTES: usize = 32 * 1024;
+const PREVIEW_STDERR_BYTES: usize = 8 * 1024;
+
+/// The first `limit` bytes of a string, never splitting a character.
+fn head(text: &str, limit: usize) -> &str {
+    if text.len() <= limit {
+        return text;
+    }
+    let mut end = limit;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// What the row says instead of the bytes: the outcome, the head of each stream,
+/// and a pointer. `blob` carries either the attachment's size or the reason
+/// there is none.
 fn summarise(full: &str, ok: bool, note: serde_json::Value) -> String {
     let value: serde_json::Value = serde_json::from_str(full).unwrap_or(serde_json::Value::Null);
     let output = value.get("output");
+    let stream = |field: &str| -> &str {
+        output
+            .and_then(|value| value.get(field))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+    };
     serde_json::json!({
         "ok": ok,
         "output": {
             "tool": output.and_then(|value| value.get("tool")).cloned().unwrap_or(serde_json::json!("shell")),
             "exit_code": output.and_then(|value| value.get("exit_code")).cloned().unwrap_or(serde_json::Value::Null),
+            "stdout": head(stream("stdout"), PREVIEW_BYTES),
+            "stderr": head(stream("stderr"), PREVIEW_STDERR_BYTES),
             "truncated": true,
-            "bytes": full.len(),
+            "stdout_bytes": stream("stdout").len(),
+            "stderr_bytes": stream("stderr").len(),
         },
         "blob": note,
     })
