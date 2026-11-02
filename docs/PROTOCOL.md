@@ -15,7 +15,10 @@
 | 地址（公钥） | `base58(pub32)` | 43–44 字符；路由、登记、授权都用它 |
 | 私钥 | `base58(seed32 ‖ pub32)` | 拓展格式，Solana `Keypair.secretKey` 同款 |
 | 签名 | `base58(sig64)` | |
-| 密文 / nonce / 临时公钥 | `base58` | 与 ZeroChannel 同构 |
+| 密文（`sealed`） | `base64url`（无 padding） | 一个字段装下 nonce/临时公钥/包裹密钥/正文 |
+
+密钥与签名用 base58（短、要与 Solana/AuthMini 互通）；密文用 base64url —— base58 的
+字符表对长数据是净损失（体积多 ~3%，编解码走大数运算），不拿它装正文。
 
 加载私钥时校验后 32 字节等于由 `seed` 推出的公钥，不一致立即拒绝。
 加密用的 X25519 由同一把密钥派生：
@@ -55,6 +58,7 @@ body        = AES-256-GCM(content_key, iv, aad, plaintext)
 wrapped     = crypto_box(content_key, nonce24, recipient_x25519_pub)
             = eph_pub32 ‖ XSalsa20-Poly1305(HSalsa20(X25519(eph_sk, recipient)), nonce24, content_key)
 sealed      = nonce24 ‖ eph_pub32 ‖ wrapped ‖ iv12 ‖ body
+传输时整块编码成 base64url：sealed_b64
 ```
 
 - `crypto_box` 就是 libsodium `crypto_box` / ZeroChannel 的 `nacl.box`：
@@ -64,9 +68,11 @@ sealed      = nonce24 ‖ eph_pub32 ‖ wrapped ‖ iv12 ‖ body
 
 ## 4. 报文
 
-```
-call   = { call_id, issuer, device, issued_at, expires_at, sealed, sig }
-result = { call_id, device, ok, issued_at, sealed, sig }
+```jsonc
+call   = { "call_id": "...", "issuer": "<base58>", "device": "<base58>",
+           "issued_at": 0, "expires_at": 0, "sealed": "<base64url>", "sig": "<base58>" }
+result = { "call_id": "...", "device": "<base58>", "ok": true, "issued_at": 0,
+           "sealed": "<base64url>", "sig": "<base58>" }
 ```
 
 - `sig` 是签发者对该条报文的 Ed25519 签名，覆盖除 `sig` 外的全部字段（含 `sealed`）。
@@ -84,7 +90,7 @@ result = { call_id, device, ok, issued_at, sealed, sig }
 ## 5. 云端能看到什么
 
 ```
-call_id, issuer, device, sealed, sig, issued_at, expires_at, 状态
+call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
 ```
 
 看不到：工具名、参数、输出、结果正文。云端因此也做不了任何"内容相关"的策略——
