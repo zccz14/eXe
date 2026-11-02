@@ -46,7 +46,10 @@ label   = "mac-mini"
 
 - `secret` 是设备唯一的身份材料，第一次运行 `exe run` 时本机生成，从不外传；
   `exe trust <地址>` 编辑信任列表，重启后生效。
-- 设备启动时用自己的密钥向云端**自登记**：一次自签请求，云端只记地址与在线状态。
+- 设备启动时用自己的密钥向云端**自登记**：一次自签请求，带上 `hostname` / `platform` /
+  `version` / `trust` / `run_id`。云端记下这些，只是为了少发：`trust` 是设备自己写的那份
+  列表的**副本**，它只能用来把设备本来就会拒绝的调用挡在门外。副本在注册时刷新，
+  因此最多和设备配置一样旧，绝不会比设备更宽松——设备仍然逐封验证，它是唯一权威。
 - **每一方的每一次**请求都自签，没有 bearer 令牌，也没有登录：
 
   ```
@@ -125,6 +128,19 @@ result = { "call_id": "...", "device": "<base58>", "ok": true, "issued_at": 0,
 不写库——一条连接记得自己发过什么，断线重连时清空，于是所有未回执的调用被整条重投。
 `received_at` 来自设备自己签的回执，是系统里唯一一条「确实送达」的证据。
 
+**进程重启是一次可观察的状态转移，不是沉默。** 每个 `exe run` 进程有自己的 `run_id`；
+回执到达时云端把它记进 `calls.device_run_id`。注册时 `run_id` 变了，就把上一枚 run
+签过收据、却始终没有结果的调用标成 `lost`：
+
+```
+lost  = 它被一个已经不存在的进程接手过，结果未知
+```
+
+**不重投。** 丢回执时命令根本没跑，重投是纯收益；而进程死在执行中间时，重投等于把
+一次可能已经发生的副作用变成两次。执行通道不替人做这个决定——控制台看到 `lost`，
+人可以自己判断那条命令幂不幂等，再签一封新的（新 `call_id`）。一条迟到的、设备签过名
+的结果依然可以把 `lost` 结案：证据比猜测可信。
+
 设备收到一条调用时按顺序做四件事：
 
 ```
@@ -137,6 +153,7 @@ result = { "call_id": "...", "device": "<base58>", "ok": true, "issued_at": 0,
 
 ```
 call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
+设备登记：hostname, platform, version, trust(副本), run_id, 首次/最后活跃
 ```
 
 看不到：工具名、参数、输出、结果正文。云端因此也做不了任何内容相关的判断——
@@ -148,7 +165,7 @@ call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| PUT | `/v1/devices/{address}` | 自登记/续约（`hostname`/`platform`/`version`） |
+| PUT | `/v1/devices/{address}` | 自登记/续约（`hostname`/`platform`/`version`/`trust`/`run_id`） |
 | GET | `/v1/devices/{address}/stream` | SSE：`hello` / `call` / `cancel` / `heartbeat` |
 | POST | `/v1/devices/{address}/calls/{call_id}/received` | 收到（唯一的妥投证据） |
 | POST | `/v1/devices/{address}/calls/{call_id}/result` | 回传密封结果 |
@@ -159,12 +176,15 @@ call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
 |---|---|---|
 | GET | `/api/me` | 云端认得的地址 `{ address, custody }` |
 | GET | `/api/devices/{address}` | 该地址的在线态与自登记信息（`registered` / `online` / `last_seen_at`） |
-| POST | `/api/devices/{address}/calls` | 投递信封 |
+| POST | `/api/devices/{address}/calls` | 投递信封（只接受该设备声明信任的签发者） |
 | GET | `/api/calls?device={address}` · `/api/calls/{call_id}` | 状态与信封（浏览器自行解封） |
 | POST | `/api/calls/{call_id}/cancel` | 请求取消 |
 
 控制台没有注册这一步：地址由浏览器自己生成，第一次请求就生效。归属由签名回答，
 `calls.issuer` 就是它的所有者，没有第二个 `user_id` 列。
+
+云端只为**已登记**、且 `trust` 里包含该签发者的地址排队。两道拒绝（设备不信任这个
+地址 / 信封签名不合法）回同一个响应：`does device D trust address X` 不是云端该回答的问题。
 
 **云端没有地址簿。** 控制台记得哪些设备，是它自己浏览器里的一份名单（IndexedDB）；
 换浏览器、清站点数据，名单就没了，重填一次即可，设备上的 `trust` 一个字都不用动。
@@ -178,6 +198,7 @@ received    设备签过收据；这是唯一一条「确实送达」的证据
 succeeded / failed   设备签过的结果
 cancelled   在 queued 时被取消
 expired     已过 expires_at
+lost        被一个已经死掉的进程接手过，结果未知（不重投，等一封新调用）
 ```
 
 ## 7. 执行限额
