@@ -88,3 +88,10 @@ jobs:
         with:
           name: exe-android-arm64
           path: agent/target/aarch64-linux-android/release/libexe_mobile.so
+
+  pr-check:
+    name: pr-check
+    needs: [worker, rust, integration]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "all required checks passed"
