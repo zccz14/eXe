@@ -136,20 +136,19 @@ test("the result vector is sealed to the issuer and signed by the device", () =>
   assert.equal(verifyResult({ ...result, device: vectors.keys.issuer_address }), false);
 });
 
-test("device requests are self-signed over method, path, address, time and nonce", () => {
+test("device requests are self-signed over method, path, address and time", () => {
   const auth = {
     method: vectors.request.method,
     path: vectors.request.path,
     address: vectors.request.address,
     timestamp: vectors.request.timestamp,
-    nonce: vectors.request.nonce,
   };
   assert.equal(sha256Hex(requestTranscript(auth)), vectors.request.transcript_sha256);
   assert.ok(verifyRequest(auth, vectors.request.sig));
   assert.equal(verifyRequest({ ...auth, method: "GET" }, vectors.request.sig), false);
   assert.equal(verifyRequest({ ...auth, path: auth.path.replace("/result", "/received") }, vectors.request.sig), false);
   assert.equal(verifyRequest({ ...auth, timestamp: auth.timestamp + 1 }, vectors.request.sig), false);
-  assert.equal(verifyRequest({ ...auth, nonce: b64u(new Uint8Array(16)) }, vectors.request.sig), false);
+  assert.equal(verifyRequest({ ...auth, address: vectors.keys.issuer_address }, vectors.request.sig), false);
   assert.equal(JSON.stringify(vectors).match(/seed32|private/i), null, "vectors carry seeds for testing only, never secrets from production");
 });
 

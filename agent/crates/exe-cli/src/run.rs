@@ -109,7 +109,7 @@ fn signed(
 impl Agent {
     /// The device announces itself with its own signature; there is no token.
     async fn register(&self) -> Result<()> {
-        let path = format!("/v1/agents/{}", self.identity.address());
+        let path = format!("/v1/devices/{}", self.identity.address());
         let request = signed(
             self.client
                 .put(format!("{}{path}", self.cloud))
@@ -131,7 +131,7 @@ impl Agent {
     }
 
     async fn listen(&self) -> Result<()> {
-        let path = format!("/v1/agents/{}/stream", self.identity.address());
+        let path = format!("/v1/devices/{}/stream", self.identity.address());
         let request = signed(
             self.client.get(format!("{}{path}", self.cloud)),
             &self.identity,
@@ -217,7 +217,7 @@ impl Agent {
             return;
         };
         let path = format!(
-            "/v1/agents/{}/calls/{}/result",
+            "/v1/devices/{}/calls/{}/result",
             self.identity.address(),
             call.call_id
         );
@@ -246,7 +246,7 @@ impl Agent {
 
     async fn execute(&self, call: CallEnvelope) {
         let base = format!(
-            "/v1/agents/{}/calls/{}",
+            "/v1/devices/{}/calls/{}",
             self.identity.address(),
             call.call_id
         );

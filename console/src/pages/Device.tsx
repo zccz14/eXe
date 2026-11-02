@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeftIcon, PlayIcon, ShieldAlertIcon, SquareIcon, Trash2Icon } from "lucide-react";
-import { Link, useParams } from "react-router-dom";
-import { api, type CallDetail, type CallView, type DeviceView } from "../api";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { api, type CallDetail, type CallView, type DeviceStatus } from "../api";
+import { bookList, bookRemove } from "../book";
 import { localCalls, newCallId, openSealed, sealDeviceCall } from "../keystore";
 import { statusCopy, useCopy } from "../i18n";
 import { Badge, Button, Card, Input, Stat } from "../ui";
@@ -13,25 +14,29 @@ const DEFAULT_TOOL = "shell";
 function statusTone(status: CallView["status"]): "muted" | "ok" | "warn" | "bad" {
   if (status === "succeeded") return "ok";
   if (status === "failed") return "bad";
-  if (status === "queued" || status === "delivered" || status === "received") return "warn";
+  if (status === "queued" || status === "received") return "warn";
   return "muted";
 }
 
 export function DevicePage() {
   const t = useCopy();
   const { address = "" } = useParams();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [tool, setTool] = useState(DEFAULT_TOOL);
   const [argsText, setArgsText] = useState<string>('{"command":"uname -a"}');
   const [openCall, setOpenCall] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const devices = useQuery({
-    queryKey: ["devices"],
-    queryFn: () => api<{ devices: DeviceView[] }>("/api/devices"),
+  const book = useQuery({ queryKey: ["book"], queryFn: bookList });
+  const entry = book.data?.find((item) => item.address === address);
+
+  const status = useQuery({
+    queryKey: ["device", address],
+    queryFn: () => api<DeviceStatus>(`/api/devices/${address}`),
     refetchInterval: 5000,
   });
-  const device = devices.data?.devices.find((item) => item.address === address);
+  const device = status.data;
 
   const calls = useQuery({
     queryKey: ["calls", address],
@@ -101,13 +106,26 @@ export function DevicePage() {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["calls", address] }),
   });
 
-  const remove = useMutation({
-    mutationFn: () => api<void>(`/api/devices/${address}`, { method: "DELETE" }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["devices"] }),
+  /** Local only: this browser stops listing the address; nothing on the device changes. */
+  const forget = useMutation({
+    mutationFn: () => bookRemove(address),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["book"] });
+      navigate("/devices");
+    },
   });
 
-  if (!device) {
-    return <div className="p-6 text-sm text-muted-foreground">{devices.isLoading ? "…" : t("no_devices")}</div>;
+  if (book.isLoading) return <div className="p-6 text-sm text-muted-foreground">…</div>;
+  if (!entry) {
+    return (
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-6 text-sm text-muted-foreground">
+        <Link to="/devices" className="flex items-center gap-1 hover:text-foreground">
+          <ArrowLeftIcon className="size-4" />
+          {t("devices_title")}
+        </Link>
+        <p>{t("not_in_book")}</p>
+      </div>
+    );
   }
 
   return (
@@ -120,23 +138,23 @@ export function DevicePage() {
       <Card className="space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-xl font-semibold">{device.label}</h1>
-            <p className="font-mono text-xs text-muted-foreground">{device.address}</p>
+            <h1 className="text-xl font-semibold">{entry.label}</h1>
+            <p className="font-mono text-xs text-muted-foreground">{entry.address}</p>
             <p className="text-sm text-muted-foreground">
-              {[device.hostname, device.platform, device.version].filter(Boolean).join(" · ") || t("never_seen")}
+              {[device?.hostname, device?.platform, device?.version].filter(Boolean).join(" · ") || t("never_seen")}
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {device.online ? <Badge tone="ok">{t("online")}</Badge> : <Badge tone="muted">{t("offline")}</Badge>}
-            <Button variant="outline" onClick={() => remove.mutate()} disabled={remove.isPending}>
+            {device?.online ? <Badge tone="ok">{t("online")}</Badge> : <Badge tone="muted">{t("offline")}</Badge>}
+            <Button variant="outline" onClick={() => forget.mutate()} disabled={forget.isPending}>
               <Trash2Icon className="size-4" />
-              {t("remove_device")}
+              {t("forget_device")}
             </Button>
           </div>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
-          <Stat label={t("last_seen")} value={device.last_seen_at ? new Date(device.last_seen_at * 1000).toLocaleString() : "—"} />
-          <Stat label={t("device_address")} value={device.address} mono />
+          <Stat label={t("last_seen")} value={device?.last_seen_at ? new Date(device.last_seen_at * 1000).toLocaleString() : "—"} />
+          <Stat label={t("device_address")} value={entry.address} mono />
         </div>
       </Card>
 
@@ -184,7 +202,7 @@ export function DevicePage() {
                 </button>
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <span>{new Date(call.issued_at * 1000).toLocaleTimeString()}</span>
-                  {["queued", "delivered", "received"].includes(call.status) && (
+                  {["queued", "received"].includes(call.status) && (
                     <Button variant="ghost" onClick={() => cancel.mutate(call.call_id)}>
                       <SquareIcon className="size-3.5" />
                       {t("cancel")}

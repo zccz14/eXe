@@ -29,11 +29,10 @@
   },
   "request": {
     "method": "POST",
-    "path": "/v1/agents/GyGKxMyg1p9SsHfm15MkNUu1u9TN2JtTspcdmrtGUdse/calls/11111111-1111-4111-8111-111111111111/result",
+    "path": "/v1/devices/GyGKxMyg1p9SsHfm15MkNUu1u9TN2JtTspcdmrtGUdse/calls/11111111-1111-4111-8111-111111111111/result",
     "address": "GyGKxMyg1p9SsHfm15MkNUu1u9TN2JtTspcdmrtGUdse",
     "timestamp": 1700000000,
-    "nonce": "DQ0NDQ0NDQ0NDQ0NDQ0NDQ",
-    "transcript_sha256": "c268015ad965e161ae164b71ecddd793912ed1a0b7c5f0d29a697128f82a58a5",
-    "sig": "5WEQTWRxY1BHWGQ7msrmkVyquLzAxKckt9Yb8V4Schb48oTWRRKqAhrw5qMqTtvruXtxbQhbqDQaGoDhcvWXXX75"
+    "transcript_sha256": "51b5bbf9067ff276f09236c96798fac24162072bda67bf5c24fe05653a829d1d",
+    "sig": "48jLk5woau4SfDh5Gjwmwr45gMUFbWqdP9VtE6aaaFXH17QDxp3D5yqVkZUFeHdvq2GU6yrGMp9v1zgwUdk8HhvG"
   }
 }

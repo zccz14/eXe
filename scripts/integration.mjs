@@ -10,7 +10,6 @@ import {
   buildResult,
   newIdentity,
   openCall,
-  randomBytes,
   signRequest,
   verifyCall,
 } from "../shared/protocol.ts";
@@ -86,29 +85,28 @@ async function run() {
 
   // The address in `x-exe-address` must be the address that signed.
   const impostor = makeBrowser();
-  const stolen = signedHeaders(browser.identity, "GET", "/api/devices");
-  const impersonation = await fetch(`${base}/api/devices`, {
+  const stolen = signedHeaders(browser.identity, "GET", "/api/me");
+  const impersonation = await fetch(`${base}/api/me`, {
     headers: { ...stolen, "x-exe-address": impostor.address },
   });
   assert.equal(impersonation.status, 401, "a header cannot name an address it cannot sign for");
 
-  // A captured console request dies with its nonce, exactly like a device one.
-  const replayable = signedHeaders(browser.identity, "GET", "/api/devices");
-  assert.equal((await fetch(`${base}/api/devices`, { headers: replayable })).status, 200);
-  assert.equal((await fetch(`${base}/api/devices`, { headers: replayable })).status, 401, "a captured request cannot be replayed");
+  // A captured request can be replayed — and that is the point: every write it can
+  // reach is keyed by a `call_id` the sender signed, so a replay re-states a row.
+  const replayable = signedHeaders(browser.identity, "GET", "/api/me");
+  assert.equal((await fetch(`${base}/api/me`, { headers: replayable })).status, 200);
+  assert.equal((await fetch(`${base}/api/me`, { headers: replayable })).status, 200, "no nonce ledger: a replay is a repeat, not an attack");
 
-  // --- a device is added by address; there is nothing to pair --------------
+  // --- a device is reached by address; the relay keeps no address book ------
   const device = newIdentity();
   const deviceAddress = addressOf(device);
-  const added = await browser.addDevice(base, deviceAddress, "integration");
-  assert.equal(added.device.address, deviceAddress);
-  assert.equal(added.device.online, false);
-  assert.equal(added.device.hostname, null, "the relay knows nothing about it yet");
-  const devices = await browser.request(base, "GET", "/api/devices");
-  assert.equal(devices.devices.length, 1);
+  const unknown = await browser.request(base, "GET", `/api/devices/${deviceAddress}`);
+  assert.equal(unknown.registered, false, "an address that never checked in is unknown, not an error");
+  assert.equal(unknown.online, false);
+  assert.equal(unknown.hostname, null, "the relay knows nothing about it yet");
 
   // --- the device self-registers: one signed request, single-use nonce -----
-  const regPath = `/v1/agents/${deviceAddress}`;
+  const regPath = `/v1/devices/${deviceAddress}`;
   const regBody = JSON.stringify({ hostname: "integration-host", platform: "linux-x86_64", version: "0.1.0" });
   const regHeaders = signedHeaders(device, "PUT", regPath);
   const reg = await fetch(`${base}${regPath}`, {
@@ -122,21 +120,19 @@ async function run() {
     headers: { ...regHeaders, "content-type": "application/json" },
     body: regBody,
   });
-  assert.equal(replayed.status, 401, "a captured request cannot be replayed");
+  assert.equal(replayed.status, 200, "a repeated registration restates the same row");
 
   const stale = {
     method: "PUT",
     path: regPath,
     address: deviceAddress,
     timestamp: now() - 3600,
-    nonce: b64u(randomBytes(16)),
   };
   const staleAttempt = await fetch(`${base}${regPath}`, {
     method: "PUT",
     headers: {
       "content-type": "application/json",
       "x-exe-timestamp": String(stale.timestamp),
-      "x-exe-nonce": stale.nonce,
       "x-exe-signature": signRequest(device.seed, stale),
     },
     body: regBody,
@@ -150,12 +146,12 @@ async function run() {
   });
   assert.equal(unsigned.status, 401, "self-registration needs the device key");
 
-  const online = await browser.request(base, "GET", "/api/devices");
-  assert.equal(online.devices[0].online, true);
-  assert.equal(online.devices[0].hostname, "integration-host");
+  const online = await browser.request(base, "GET", `/api/devices/${deviceAddress}`);
+  assert.equal(online.online, true);
+  assert.equal(online.hostname, "integration-host");
 
   // --- SSE with self-signed auth ------------------------------------------
-  const streamPath = `/v1/agents/${deviceAddress}/stream`;
+  const streamPath = `/v1/devices/${deviceAddress}/stream`;
   const controller = new AbortController();
   const stream = await fetch(`${base}${streamPath}`, {
     headers: signedHeaders(device, "GET", streamPath),
@@ -197,6 +193,27 @@ async function run() {
   assert.equal(wire.includes("shell"), false, "the wire carries no tool name");
   assert.equal(wire.includes("uname -a"), false, "nor the arguments");
 
+  // Handing a call to a socket writes nothing: until the device signs a receipt,
+  // the relay has no idea whether the call arrived.
+  const pushed = await browser.request(base, "GET", `/api/calls/${callId}`);
+  assert.equal(pushed.call.status, "queued", "pushing is not delivery; only the receipt is");
+  assert.equal(pushed.call.received_at, null);
+
+  // The same signed envelope sent twice queues once — replay is a no-op by key.
+  // The address below never registered anywhere: the relay does not gate on a book.
+  const replayDevice = addressOf(newIdentity());
+  const replayCall = browser.signCall(replayDevice, "shell", { command: "printf replay" });
+  const postCall = () =>
+    fetch(`${base}/api/devices/${replayDevice}/calls`, {
+      method: "POST",
+      headers: { ...signedHeaders(browser.identity, "POST", `/api/devices/${replayDevice}/calls`), "content-type": "application/json" },
+      body: JSON.stringify(replayCall),
+    });
+  assert.equal((await postCall()).status, 200, "an address that never checked in can still be queued for");
+  assert.equal((await postCall()).status, 409, "a replayed envelope collides on the call_id");
+  const replayList = await browser.request(base, "GET", `/api/calls?device=${replayDevice}`);
+  assert.equal(replayList.calls.length, 1, "the replay wrote nothing");
+
   // Editing the sealed body after signing is refused before it is queued.
   const forged = browser.signCall(deviceAddress, "shell", { command: "printf honest" });
   forged.sealed = b64u(new Uint8Array(160));
@@ -214,10 +231,9 @@ async function run() {
   });
   assert.equal(unsignedCall.status, 400);
 
-  // Another console may keep the same address in its own book: the relay routes
-  // but does not decide trust. What stops it is the device's trust list.
+  // Any console may queue for any address: the relay routes, it does not decide
+  // trust. What stops a stranger's call is the device's own trust list.
   const stranger = makeBrowser();
-  await stranger.addDevice(base, deviceAddress, "not mine");
   const strangerCall = stranger.signCall(deviceAddress, "shell", { command: "printf stranger" });
   assert.ok(verifyCall(strangerCall), "the stranger's envelope is well formed");
   const strangerQueued = await fetch(`${base}/api/devices/${deviceAddress}/calls`, {
@@ -234,11 +250,14 @@ async function run() {
   );
 
   // --- receipts and results ------------------------------------------------
-  const receivedPath = `/v1/agents/${deviceAddress}/calls/${callId}/received`;
+  const receivedPath = `/v1/devices/${deviceAddress}/calls/${callId}/received`;
   const received = await fetch(`${base}${receivedPath}`, { method: "POST", headers: signedHeaders(device, "POST", receivedPath) });
   assert.equal(received.status, 204);
+  const acknowledged = await browser.request(base, "GET", `/api/calls/${callId}`);
+  assert.equal(acknowledged.call.status, "received", "the signed receipt is the delivery proof");
+  assert.ok(acknowledged.call.received_at);
 
-  const resultPath = `/v1/agents/${deviceAddress}/calls/${callId}/result`;
+  const resultPath = `/v1/devices/${deviceAddress}/calls/${callId}/result`;
   const forgedResult = await fetch(`${base}${resultPath}`, {
     method: "POST",
     headers: { ...signedHeaders(device, "POST", resultPath), "content-type": "application/json" },
@@ -291,21 +310,19 @@ async function run() {
   // --- cancelling something that was never delivered -----------------------
   const idle = newIdentity();
   const idleAddress = addressOf(idle);
-  await browser.addDevice(base, idleAddress, "idle");
   const pending = await browser.call(base, idleAddress, "shell", { command: "sleep 5" });
   const cancelled = await browser.request(base, "POST", `/api/calls/${pending.call.call_id}/cancel`);
   assert.equal(cancelled, null);
   const cancelledView = await browser.request(base, "GET", `/api/calls/${pending.call.call_id}`);
   assert.equal(cancelledView.call.status, "cancelled");
 
-  // --- removing a device stops new calls -----------------------------------
-  assert.equal(await browser.request(base, "DELETE", `/api/devices/${idleAddress}`), null);
-  const blocked = await fetch(`${base}/api/devices/${idleAddress}/calls`, {
-    method: "POST",
-    headers: { ...signedHeaders(browser.identity, "POST", `/api/devices/${idleAddress}/calls`), "content-type": "application/json" },
-    body: JSON.stringify(browser.signCall(idleAddress, "shell", { command: "true" })),
-  });
-  assert.equal(blocked.status, 404);
+  // --- forgetting a device is local, and was never a boundary --------------
+  // The address book lives in the browser now. The relay queues for any address
+  // that presents a valid envelope; what refuses a call is the device's trust list.
+  const ghost = await browser.call(base, idleAddress, "shell", { command: "true" });
+  assert.ok(ghost.call.call_id, "a forgotten device can still be queued for");
+  const ghostView = await browser.request(base, "GET", `/api/calls/${ghost.call.call_id}`);
+  assert.equal(ghostView.call.status, "queued", "nothing on the relay depends on a browser's book");
 
   controller.abort();
 }

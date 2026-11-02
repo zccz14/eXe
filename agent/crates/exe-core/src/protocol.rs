@@ -2,8 +2,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::{
-    b58, b64u, parse_address, push_lp, push_u64, seal, unb64u, unix_now, verify, CryptoError,
-    Identity, SealContext,
+    b58, parse_address, push_lp, push_u64, seal, unb64u, unix_now, verify, CryptoError, Identity,
+    SealContext,
 };
 
 /// What the device finds inside a sealed command.
@@ -158,14 +158,16 @@ impl ResultEnvelope {
     }
 }
 
-/// A device request authenticates itself: method, path, address, time, nonce.
+/// A device request authenticates itself: method, path, address, time.
+///
+/// No nonce: replay defence lives in the `call_id` the sender signed, not in a
+/// server-side ledger of used numbers (see docs/THREAT-MODEL.md).
 #[derive(Clone, Debug)]
 pub struct RequestAuth {
     pub method: String,
     pub path: String,
     pub address: String,
     pub timestamp: u64,
-    pub nonce: String,
 }
 
 impl RequestAuth {
@@ -176,28 +178,24 @@ impl RequestAuth {
         push_lp(&mut out, self.path.as_bytes());
         push_lp(&mut out, self.address.as_bytes());
         push_u64(&mut out, self.timestamp);
-        push_lp(&mut out, self.nonce.as_bytes());
         out
     }
 }
 
-pub fn new_request_auth(identity: &Identity, method: &str, path: &str, nonce: &str) -> RequestAuth {
+pub fn new_request_auth(identity: &Identity, method: &str, path: &str) -> RequestAuth {
     RequestAuth {
         method: method.to_owned(),
         path: path.to_owned(),
         address: identity.address(),
         timestamp: unix_now(),
-        nonce: nonce.to_owned(),
     }
 }
 
 pub fn request_headers(identity: &Identity, method: &str, path: &str) -> Vec<(String, String)> {
-    let nonce = b64u(&crate::crypto::random_bytes::<16>());
-    let auth = new_request_auth(identity, method, path, &nonce);
+    let auth = new_request_auth(identity, method, path);
     let signature = identity.sign(&auth.transcript());
     vec![
         ("x-exe-timestamp".into(), auth.timestamp.to_string()),
-        ("x-exe-nonce".into(), auth.nonce),
         ("x-exe-signature".into(), signature),
     ]
 }
@@ -386,7 +384,6 @@ mod tests {
             path: v["request"]["path"].as_str().unwrap().into(),
             address: v["request"]["address"].as_str().unwrap().into(),
             timestamp: v["request"]["timestamp"].as_u64().unwrap(),
-            nonce: v["request"]["nonce"].as_str().unwrap().into(),
         };
         assert_eq!(
             sha256_hex(&auth.transcript()),

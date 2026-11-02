@@ -54,25 +54,24 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await response.json()) as T;
 }
 
-export interface DeviceView {
+/** What the relay knows about one address. The label lives here, in the browser. */
+export interface DeviceStatus {
   address: string;
-  label: string;
+  registered: boolean;
   hostname: string | null;
   platform: string | null;
   version: string | null;
   online: boolean;
   last_seen_at: number | null;
-  created_at: number;
 }
 
 export interface CallView {
   call_id: string;
   device: string;
   issuer: string;
-  status: "queued" | "delivered" | "received" | "succeeded" | "failed" | "cancelled" | "expired";
+  status: "queued" | "received" | "succeeded" | "failed" | "cancelled" | "expired";
   issued_at: number;
   expires_at: number;
-  delivered_at: number | null;
   received_at: number | null;
   settled_at: number | null;
   has_result: boolean;

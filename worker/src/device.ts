@@ -1,13 +1,21 @@
 // Device-facing API: self-registration, the SSE stream, receipts, sealed results.
 // Every handler authenticates a signed request; no bearer token exists.
+//
+// The stream is read-only on the delivery path. Pushing a call writes nothing:
+// whether this connection has already handed a call over is a fact about the
+// connection, not a row in the database. The only proof of delivery the relay
+// ever records is the device's own signed receipt, which arrives as a separate
+// request (see docs/PROTOCOL.md §4).
 import { verifyResult, type CallEnvelope, type ResultEnvelope } from "../../shared/protocol.ts";
 import type { CallRow, Env } from "./db.ts";
-import { authenticateDevice, callById, touchAgent } from "./db.ts";
+import { authenticateDevice, callById, touchDevice } from "./db.ts";
 import { ApiError, body, empty, json, now } from "./http.ts";
 
 const STREAM_MAX_SECONDS = 900;
 const DEVICE_OFFLINE_SECONDS = 90;
-const LOST_AFTER_SECONDS = 120;
+/** How long a connection waits before handing the same call over again. */
+const RESEND_AFTER_SECONDS = 120;
+const PENDING_LIMIT = 16;
 
 function text(value: unknown, field: string, max: number): string {
   if (typeof value !== "string") throw new ApiError(400, `${field} is required`);
@@ -19,13 +27,13 @@ function text(value: unknown, field: string, max: number): string {
 /** Turns an expired queue into `expired`; signed envelopes have a deadline too. */
 async function sweep(env: Env, address: string): Promise<void> {
   await env.DB.prepare(
-    "UPDATE calls SET status='expired', settled_at=? WHERE device_address=? AND status IN ('queued','delivered','received') AND expires_at<=?",
+    "UPDATE calls SET status='expired', settled_at=? WHERE device_address=? AND status IN ('queued','received') AND expires_at<=?",
   )
     .bind(now(), address, now())
     .run();
 }
 
-export async function registerAgent(request: Request, env: Env, address: string): Promise<Response> {
+export async function registerDevice(request: Request, env: Env, address: string): Promise<Response> {
   await authenticateDevice({ request, env, address });
   const input = await body<Record<string, unknown>>(request);
   const info = {
@@ -33,7 +41,7 @@ export async function registerAgent(request: Request, env: Env, address: string)
     platform: text(input.platform, "platform", 40),
     version: text(input.version, "version", 20),
   };
-  await touchAgent(env, address, info);
+  await touchDevice(env, address, info);
   return json({
     address,
     now: now(),
@@ -42,72 +50,27 @@ export async function registerAgent(request: Request, env: Env, address: string)
   });
 }
 
-/**
- * One read-only round trip tells the stream loop whether there is anything to
- * do. Polls are cheap reads; writes happen only when a call or a cancellation
- * actually exists, so idle devices never contend on the single D1 primary.
- */
-interface Pending {
-  hasCall: boolean;
-  hasReplay: boolean;
-  hasCancel: boolean;
-}
-
-async function peek(env: Env, address: string): Promise<Pending> {
-  const stamp = now();
-  const row = await env.DB.prepare(
-    `SELECT
-       EXISTS(SELECT 1 FROM calls WHERE device_address=? AND status='queued' AND expires_at>?) AS has_call,
-       EXISTS(SELECT 1 FROM calls WHERE device_address=? AND status IN ('queued','delivered') AND expires_at>? AND (delivered_at IS NULL OR delivered_at<=?)) AS has_replay,
-       EXISTS(SELECT 1 FROM calls WHERE device_address=? AND status IN ('queued','delivered','received') AND cancel_requested_at IS NOT NULL AND cancel_notified_at IS NULL) AS has_cancel`,
-  )
-    .bind(address, stamp, address, stamp, stamp - LOST_AFTER_SECONDS, address)
-    .first<{ has_call: number; has_replay: number; has_cancel: number }>();
-  return {
-    hasCall: row?.has_call === 1,
-    hasReplay: row?.has_replay === 1,
-    hasCancel: row?.has_cancel === 1,
-  };
-}
-
-async function claimCall(env: Env, address: string): Promise<CallRow | null> {
-  const rows = await env.DB.prepare(
-    `UPDATE calls SET status='delivered', delivered_at=?
-     WHERE call_id=(SELECT call_id FROM calls WHERE device_address=? AND status='queued' AND expires_at>? ORDER BY created_at,call_id LIMIT 1)
-     RETURNING *`,
-  )
-    .bind(now(), address, now())
-    .all<CallRow>();
-  return rows.results[0] ?? null;
+/** What the loop needs to know about a call, without dragging up to 96 KiB of ciphertext. */
+interface PendingCall {
+  call_id: string;
+  status: string;
+  cancel_requested_at: number | null;
 }
 
 /**
- * Delivery is at-least-once: a lost receipt or a dropped stream must not lose a
- * call. Anything that was handed to this device and never settled is re-sent on
- * the next stream; the device answers a repeat with the result it already
- * signed instead of running the tool twice.
+ * One read-only query per tick: the calls this device has not acknowledged yet.
+ * `received` rows appear only while a cancellation is waiting for them, because a
+ * receipt is the device saying it is already working on the call.
  */
-async function claimReplays(env: Env, address: string): Promise<CallRow[]> {
+async function pendingCalls(env: Env, address: string): Promise<PendingCall[]> {
   const rows = await env.DB.prepare(
-    `UPDATE calls SET status='delivered', delivered_at=?
-     WHERE device_address=? AND status IN ('queued','delivered') AND expires_at>?
-       AND (delivered_at IS NULL OR delivered_at<=?)
-     RETURNING *`,
+    `SELECT call_id, status, cancel_requested_at FROM calls
+     WHERE device_address=? AND status IN ('queued','received') AND expires_at>?
+     ORDER BY created_at, call_id LIMIT ?`,
   )
-    .bind(now(), address, now(), now() - LOST_AFTER_SECONDS)
-    .all<CallRow>();
+    .bind(address, now(), PENDING_LIMIT)
+    .all<PendingCall>();
   return rows.results;
-}
-
-async function claimCancellation(env: Env, address: string): Promise<string | null> {
-  const rows = await env.DB.prepare(
-    `UPDATE calls SET cancel_notified_at=?
-     WHERE call_id=(SELECT call_id FROM calls WHERE device_address=? AND status IN ('queued','delivered','received') AND cancel_requested_at IS NOT NULL AND cancel_notified_at IS NULL ORDER BY created_at,call_id LIMIT 1)
-     RETURNING call_id`,
-  )
-    .bind(now(), address)
-    .all<{ call_id: string }>();
-  return rows.results[0]?.call_id ?? null;
 }
 
 function sseChunk(event: string, data: unknown): Uint8Array {
@@ -128,7 +91,7 @@ function envelopeOf(call: CallRow): CallEnvelope {
 
 export async function eventStream(request: Request, env: Env, address: string): Promise<Response> {
   await authenticateDevice({ request, env, address });
-  await touchAgent(env, address);
+  await touchDevice(env, address);
   await sweep(env, address);
 
   const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
@@ -138,28 +101,39 @@ export async function eventStream(request: Request, env: Env, address: string): 
   const pump = async () => {
     try {
       await writer.write(sseChunk("hello", { address, now: now() }));
-      let lastReplay = 0;
+      // Delivery is at-least-once. These two maps are the whole of "what has this
+      // connection said" — a reconnect starts empty and therefore re-sends every
+      // call the device has not acknowledged, which is exactly the guarantee.
+      const sent = new Map<string, number>();
+      const cancelled = new Map<string, number>();
       while (Date.now() - startedAt < STREAM_MAX_SECONDS * 1000) {
-        const pending = await peek(env, address);
-        const call = pending.hasCall ? await claimCall(env, address) : null;
-        if (call) {
-          await writer.write(sseChunk("call", envelopeOf(call)));
-        } else {
-          if (Date.now() - lastReplay > 15_000) {
-            lastReplay = Date.now();
-            if (pending.hasReplay) {
-              for (const replay of await claimReplays(env, address)) {
-                await writer.write(sseChunk("call", envelopeOf(replay)));
+        const stamp = now();
+        let wrote = false;
+        for (const pending of await pendingCalls(env, address)) {
+          if (pending.status === "queued") {
+            const last = sent.get(pending.call_id);
+            if (last === undefined || last <= stamp - RESEND_AFTER_SECONDS) {
+              const call = await callById(env, pending.call_id);
+              if (call) {
+                await writer.write(sseChunk("call", envelopeOf(call)));
+                sent.set(call.call_id, stamp);
+                wrote = true;
               }
             }
           }
-          const cancelled = pending.hasCancel ? await claimCancellation(env, address) : null;
-          if (cancelled) await writer.write(sseChunk("cancel", { call_id: cancelled }));
-          else await writer.write(sseChunk("heartbeat", { now: now() }));
+          if (pending.cancel_requested_at !== null) {
+            const last = cancelled.get(pending.call_id);
+            if (last === undefined || last <= stamp - RESEND_AFTER_SECONDS) {
+              await writer.write(sseChunk("cancel", { call_id: pending.call_id }));
+              cancelled.set(pending.call_id, stamp);
+              wrote = true;
+            }
+          }
         }
-        if (Date.now() - lastSeen > 30_000) {
-          lastSeen = Date.now();
-          await touchAgent(env, address);
+        if (!wrote) await writer.write(sseChunk("heartbeat", { now: now() }));
+        if (stamp - lastSeen >= 30) {
+          lastSeen = stamp;
+          await touchDevice(env, address);
           await sweep(env, address);
         }
         await sleep(1000);
@@ -184,10 +158,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * The device's signed receipt: the only evidence in the whole system that a call
+ * actually arrived. Everything else the relay knows about delivery is a guess.
+ */
 export async function markReceived(request: Request, env: Env, address: string, callId: string): Promise<Response> {
   await authenticateDevice({ request, env, address });
   const result = await env.DB.prepare(
-    "UPDATE calls SET status='received', received_at=? WHERE call_id=? AND device_address=? AND status IN ('delivered','received')",
+    "UPDATE calls SET status='received', received_at=? WHERE call_id=? AND device_address=? AND status IN ('queued','received')",
   )
     .bind(now(), callId, address)
     .run();
@@ -226,10 +204,12 @@ export async function submitResult(request: Request, env: Env, address: string, 
     if (call.result === canonical) return empty();
     throw new ApiError(409, "call is already settled with a different result");
   }
-  if (!["queued", "delivered", "received"].includes(call.status)) throw new ApiError(409, `call is ${call.status}`);
+  if (!["queued", "received"].includes(call.status)) throw new ApiError(409, `call is ${call.status}`);
 
+  // A lost receipt must never block a real outcome: a result signed for a call
+  // that is merely `queued` is accepted, because the device clearly has it.
   await env.DB.prepare(
-    "UPDATE calls SET result=?, status=?, settled_at=? WHERE call_id=? AND status IN ('queued','delivered','received')",
+    "UPDATE calls SET result=?, status=?, settled_at=? WHERE call_id=? AND status IN ('queued','received')",
   )
     .bind(canonical, result.ok ? "succeeded" : "failed", now(), callId)
     .run();

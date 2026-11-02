@@ -5,7 +5,7 @@
 | Cybion Worker | eXe | 说明 |
 |---|---|---|
 | 登记 + 批准 | 设备的 `trust` 配置 | eXe 没有登记批准流程；信任由人在设备上写死 |
-| `GET /worker/v1/.../events`（SSE） | `GET /v1/agents/{address}/stream` | `call` / `cancel` / `heartbeat` 事件同构 |
+| `GET /worker/v1/.../events`（SSE） | `GET /v1/devices/{address}/stream` | `call` / `cancel` / `heartbeat` 事件同构 |
 | `POST .../calls/{id}/received` | 同名 | 语义不变 |
 | `POST .../calls/{id}/result` | 同名 | 载荷从明文 JSON 变成密封信封 |
 | `x-cybion-worker-boot-id` | 无 | 重投与幂等取代了「重启即判失败」：未完成的调用会被重投，设备进程内按 `call_id` 去重 |
@@ -19,7 +19,8 @@
 3. **端侧只有信任列表。** 没有本地策略文件：签名来自 `trust` 里的地址就执行（shell 也是）。
    要收回权限，就把那个地址从 `trust` 里删掉并重启。
 4. **地址就是身份。** 不再有 `device_id` 与两把公钥：设备地址是它的 Ed25519 公钥，
-   控制台用地址添加设备，设备用签发者地址建立信任。
+   控制台把地址记进自己的本机名单，设备用签发者地址建立信任。
+   云端不保存任何人的设备名单，所以换浏览器就是重新填一次地址。
 
 ## 迁移步骤
 
