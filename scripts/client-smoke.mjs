@@ -109,6 +109,14 @@ async function main() {
     assert.equal(cwdResult.opened.ok, true);
     assert.ok(cwdResult.opened.output.stdout.trim().length > 0, "cwd is honoured");
 
+    // Anything past the inline budget comes back as a preview plus a pointer.
+    const medium = await browser.call(base, deviceAddress, "shell", { command: "head -c 100000 /dev/zero | tr '\\0' 'm'" });
+    const mediumDetail = await settle(medium.call.call_id);
+    assert.equal(mediumDetail.opened.output.truncated, true, "100 KiB is not inline");
+    assert.equal(mediumDetail.opened.output.stdout.length, 32 * 1024, "the preview is 32 KiB");
+    assert.equal(mediumDetail.opened.output.stdout_bytes, 100_000, "and says how much there was");
+    assert.ok(mediumDetail.opened.blob.bytes > 100_000, "the rest is attached");
+
     // A result too big for one row comes back as an attachment: the device seals
     // it separately, the relay stores bytes it cannot read, the console opens it.
     const heavy = await browser.call(base, deviceAddress, "shell", { command: "head -c 2000000 /dev/zero | tr '\\0' 'q'" });
