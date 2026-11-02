@@ -22,6 +22,7 @@
 | `clients/crates/exe-cli` | 桌面 binary：既当设备，也当调用方（`exe mcp`） | Rust |
 | `clients/android/` | Android app（JNI 复用 exe-core） | Rust + Kotlin |
 | `clients/ios/` | iOS app（staticlib 复用 exe-core） | Rust + SwiftUI |
+| `clients/macos/` | macOS 桌面客户端：**托管设备进程**，配置与权限都在这里 | SwiftUI |
 
 ## 把这台机器当作设备
 
@@ -73,5 +74,7 @@ phone   = "<设备地址>"
 ## 发布
 
 客户端二进制在 GitHub Releases 上，控制台的「下载客户端」指向最新一版；安装脚本随发布一起
-发（`/download/install.sh`，再由 `/install.sh` 转发）。服务端部署、控制台开发与产物构建见
-[`docs/DEPLOY.md`](docs/DEPLOY.md)。
+发（`/download/install.sh`，再由 `/install.sh` 转发）。macOS 上还有一个桌面客户端，它把设备进程托管进 `.app`（授权才能跨版本存活）：
+`scripts/build-app.sh && open dist/exe.app`，见 [`docs/APP.md`](docs/APP.md)。
+
+服务端部署、控制台开发与产物构建见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。

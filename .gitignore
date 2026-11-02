@@ -6,3 +6,4 @@ dist/
 .worktrees/
 target/
 .DS_Store
+.build/
