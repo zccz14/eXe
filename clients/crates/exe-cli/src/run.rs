@@ -247,8 +247,13 @@ impl Client {
 
     /// Uploads the sealed outcome as an attachment. The relay stores opaque
     /// bytes; the console is the only party that can open them.
-    async fn upload_blob(&self, call: &CallEnvelope, plaintext: &[u8]) -> Result<usize> {
-        let sealed = seal_blob(call, plaintext, unix_now())?;
+    async fn upload_blob(
+        &self,
+        call: &CallEnvelope,
+        plaintext: &[u8],
+        issued_at: u64,
+    ) -> Result<usize> {
+        let sealed = seal_blob(call, plaintext, issued_at)?;
         let path = format!(
             "/v1/devices/{}/calls/{}/blob",
             self.identity.address(),
@@ -336,8 +341,12 @@ impl Client {
         // Too big for one row: seal it as an attachment, upload it, and let the
         // row carry the pointer. A failed upload is still answered — truncated,
         // and with the reason — because silence is worse than a short answer.
+        // One timestamp for the whole answer. The attachment's AAD and the result
+        // envelope's AAD must agree, and an upload can take seconds — asking the
+        // clock twice is how a slow upload becomes an undecryptable result.
+        let issued_at = unix_now();
         let plaintext = if full.len() > INLINE_RESULT_BYTES {
-            match self.upload_blob(&call, full.as_bytes()).await {
+            match self.upload_blob(&call, full.as_bytes(), issued_at).await {
                 Ok(bytes) => {
                     info!(call = call.call_id.as_str(), bytes, "result attached");
                     summarise(&full, ok, serde_json::json!({ "bytes": bytes }))
@@ -350,14 +359,14 @@ impl Client {
         } else {
             full
         };
-        let envelope =
-            match ResultEnvelope::build(&self.identity, &call, ok, &plaintext, unix_now()) {
-                Ok(envelope) => envelope,
-                Err(error) => {
-                    warn!(call = call.call_id.as_str(), %error, "could not seal the result");
-                    return;
-                }
-            };
+        let envelope = match ResultEnvelope::build(&self.identity, &call, ok, &plaintext, issued_at)
+        {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                warn!(call = call.call_id.as_str(), %error, "could not seal the result");
+                return;
+            }
+        };
         let body = match serde_json::to_string(&envelope) {
             Ok(body) => body,
             Err(error) => {
