@@ -1,176 +1,97 @@
-# eXe Device Protocol v1
+# eXe Protocol
 
-所有二进制字段用 **base64url（无 padding）**。所有整数为大端。字符串为 UTF-8。
-长度前缀编码：`L(x) = u32be(len(x)) || x`。
+一份规范，没有版本轴。改动直接改这里，同时改两侧实现与 `tests/vectors.json`。
 
-## 1. 密钥与标识
+## 1. 身份：一把 Ed25519，公钥就是地址
 
-| 名称 | 算法 | 生成方 | 用途 |
-|---|---|---|---|
-| `acct.sig` | Ed25519 | **浏览器**（首次登录时） | 签每一次调用与配对批准；私钥不出浏览器 |
-| `acct.kex` | X25519 | **浏览器** | 结果封装的目标；私钥不出浏览器 |
-| `dev.sig` | Ed25519 | **设备** | 签每一次结果回传 |
-| `dev.kex` | X25519 | **设备** | 承接到这台设备的指令密文 |
-| `device_token` | 32B 随机 | **设备** | Bearer；只代表"能连上来" |
-| `device_secret` | 32B 随机 | **设备** | 配对轮询凭证，配对后作废 |
+每个端（人 / Agent / 设备）只有一对 Ed25519 密钥。
 
-云端只存 `sha256(device_token)`，从不接触明文令牌。
-
-## 2. 转录（签名输入）
-
-```
-T_call = "eXe/v1/call\0"
-       || L(call_id) || L(device_id) || L(account_id)
-       || L(eph) || L(nonce) || L(sha256(ct))
-       || u64be(issued_at) || u64be(expires_at)
-sig    = Ed25519(acct.sig_sk, T_call)
-
-T_result = "eXe/v1/result\0"
-         || L(call_id) || L(device_id) || L(eph_pub) || L(nonce) || L(hex(sha256(ct)))
-sig      = Ed25519(dev.sig_sk, T_result)
-
-T_approval = "eXe/v1/approval\0"
-           || L(pairing_id) || L(device_id) || L(account_id)
-           || L(acct.sig_pub) || L(acct.kex_pub) || L(dev.sig_pub) || L(dev.kex_pub) || u64be(issued_at)
-sig        = Ed25519(acct.sig_sk, T_approval)
-```
-
-指令本身是密文：`ct = AEAD(K, nonce, aad, {"name":..., "args": "..."}）`，
-其中 `K = HKDF-SHA256(X25519(eph_sk, dev.kex_pub), salt=sha256("eXe/v1/call"||call_id||device_id), info="eXe/v1/seal-call", 32)`，
-`aad = L(call_id)||L(device_id)||L(account_id)`。
-
-签名覆盖的是**密文**——云端既读不到内容，也改不动内容。
-
-## 2.1 账号登记（浏览器 → 云端）
-
-云端先发一次性挑战，浏览器用账号私钥签回来，云端只存公钥：
-
-```
-GET  /api/account/challenge   → { user_id, nonce, expires_at }   # 5 分钟，一次性
-PUT  /api/account             { sig_pub, kex_pub, nonce, issued_at, sig }
-```
-
-```
-T_account = "eXe/v1/account\0" || L(user_id) || L(nonce) || L(sig_pub) || L(kex_pub) || u64be(issued_at)
-```
-
-`GET /api/me` 只返回公钥与 `custody: "browser"`，永远不返回任何私钥材料。
-
-## 3. 配对（device-initiated）
-
-**设备 → 云端**
-
-```
-POST /v1/pairings
-{ "dev_sig_pub": "...", "dev_kex_pub": "...", "secret_hash": "...", "token_hash": "...",
-  "hostname": "...", "platform": "linux-x86_64", "version": "0.1.0" }
-→ 200 { "pairing_id": "...", "user_code": "A1B2-C3D4-E5F6", "expires_at": 1700000600, "verify_uri": "https://exe.ntnl.io/#/pair" }
-```
-
-**设备轮询**：`GET /v1/pairings/{pairing_id}`，`Authorization: Bearer <device_secret>`（≥3s 间隔）
-
-```
-pending → 202 { "status": "pending" }
-approved→ 200 { "status": "approved", "device_id": "...", "account_id": "...", "approval": { ...见下... } }
-denied  → 200 { "status": "denied" }
-```
-
-```jsonc
-"approval": {
-  "pairing_id": "...", "device_id": "...", "account_id": "...",
-  "acct_sig_pub": "...", "acct_kex_pub": "...", "dev_sig_pub": "...", "dev_kex_pub": "...",
-  "issued_at": 1700000000, "sig": "..."
-}
-```
-
-这个批准由**浏览器签名**，云端只负责存储与转发；`device_id` 在配对创建时就已分配，浏览器签的就是它。
-设备用 `acct_sig_pub` 自验，并断言 `dev_sig_pub`/`dev_kex_pub`/`device_id` 与自己一致——云端无法把批准指向别的设备，也无法凭空造一个。
-
-**SAS**（人眼比对）：`sas = 六位十进制(sha256("eXe/v1/sas" || acct_sig_pub || dev_sig_pub)[0..4])`，
-设备终端与控制台批准页同时显示；不一致即中止。
-
-## 4. 事件流（SSE）
-
-```
-GET /v1/devices/{device_id}/events
-Authorization: Bearer <device_token>
-x-exe-boot-id: <uuid v4，每进程一次>
-x-exe-version: 0.1.0
-→ text/event-stream
-```
-
-事件：
-
-```
-event: hello    data: {"device_id":"...","now":1700000000}
-event: call     data: {"id","device_id","account_id","eph","nonce","ct","issued_at","expires_at","sig"}
-event: cancel   data: {"id":"<call_id>"}
-event: heartbeat data: {}
-```
-
-`boot_id` 变化的处理：上一次 boot 停在 `delivered`/`received` 的调用一律判 `device_restarted`（结果未知，可能已发生副作用）。
-
-## 5. 确认与回传
-
-```
-POST /v1/devices/{id}/calls/{call_id}/received     204   // 收到并开始执行
-POST /v1/devices/{id}/calls/{call_id}/result       204
-```
-
-结果信封（设备 → 云端）：
-
-```jsonc
-{
-  "v": 1,
-  "ok": true,
-  "eph": "<X25519 一次性公钥>",
-  "nonce": "<12B>",
-  "ct": "<ChaCha20-Poly1305 密文>",
-  "sig": "<Ed25519 over T_result>"
-}
-```
-
-派生：
-
-```
-ikm  = X25519(dev_eph_sk, acct.kex_pub)
-salt = sha256("eXe/v1/result" || call_id || device_id)
-key  = HKDF-SHA256(ikm, salt, "eXe/v1/seal", 32)
-aad  = L(call_id) || L(device_id)
-ct   = ChaCha20Poly1305(key, nonce, aad, plaintext = 结果 JSON 字符串)
-```
-
-结果明文是 JSON：`{"ok":true,"output":{...}}` 或 `{"ok":false,"error":"...","code":"..."}`。
-
-`ok` 也在签名范围里：云端解不开密文，所以"成功还是失败"必须由设备签出来，而不是由云端猜。
-
-云端只把信封原样落库，读取接口（`GET /api/calls/{id}`）返回的就是信封；解开它的是浏览器。
-
-## 6. 控制台 API（AuthMini JWT，aud = exe.ntnl.io）
-
-| 方法 | 路径 | 说明 |
+| 东西 | 编码 | 形态 |
 |---|---|---|
-| GET | `/api/me` | 账号身份卡：`account_id`、`sig_pub`、`kex_pub`、`registered`、`custody` |
-| GET | `/api/account/challenge` | 一次性登记挑战 |
-| PUT | `/api/account` | 登记公钥（自签证明持有私钥） |
-| GET | `/api/devices` | 设备列表 |
-| DELETE | `/api/devices/{id}` | 撤销 |
-| GET | `/api/pairings/{code}` | 读配对详情 + SAS |
-| POST | `/api/pairings/{code}` | 批准 `{ "label": "...", "issued_at": n, "sig": "..." }`（浏览器签名） |
-| DELETE | `/api/pairings/{code}` | 拒绝 |
-| POST | `/api/devices/{id}/calls` | 提交**已签名**的信封 `{id,eph,nonce,ct,issued_at,expires_at,sig}`（云端读不到内容） |
-| GET | `/api/calls?device_id=&limit=` | 调用列表（不含明文） |
-| GET | `/api/calls/{id}` | 单次调用 + **信封**（浏览器自行解密） |
-| POST | `/api/calls/{id}/cancel` | 请求取消 |
+| 公钥 / 地址 / `issuer` / `device` | `base58(pub32)` | 43–44 字符，字符串本身就是 id |
+| 私钥（拓展格式） | `base58(seed32 ‖ pub32)` | 87–88 字符，Solana `Keypair.secretKey` 同款 |
+| 签名 | `base58(sig64)` | — |
+| 密文 / nonce / 临时公钥 | `base58` | — |
 
-## 7. 本地策略（端侧）
+- 加载私钥时先校验后 32 字节等于由 `seed` 推出的公钥，不一致直接拒绝。
+- 加密用的 X25519 由同一把密钥派生：
+  - 公钥：Edwards → Montgomery（`edwardsToMontgomeryPub`）
+  - 私钥：`SHA-512(seed)[0..32]` 裁剪（`crypto_sign_ed25519_sk_to_curve25519` 同款）
+- 签名始终用原始 Ed25519。云端只存地址，永远拿不到私钥。
+- 与 `auth-mini/sdk/device`、Solana 密钥文件格式一致，同一把密钥可直接复用。
+
+## 2. 密封：`crypto_box` 裹内容密钥 + AES-GCM 装正文
+
+两个方向（签发者→设备、设备→签发者）用同一套：
+
+```
+content_key = random(32)
+iv          = random(12)
+aad         = L(direction) ‖ L(call_id) ‖ L(issuer) ‖ L(device)
+body        = AES-256-GCM(content_key, iv, aad, plaintext)
+wrapped     = crypto_box(content_key, nonce24, recipient_x25519_pub)
+            = eph_pub32 ‖ XSalsa20-Poly1305(HSalsa20(X25519(eph_sk, recipient)), nonce24, content_key)
+sealed      = base58(layout)
+layout      = nonce24 ‖ eph_pub32 ‖ wrapped ‖ iv12 ‖ body
+```
+
+- `crypto_box` 就是 libsodium 那一套：X25519 + HSalsa20 + XSalsa20-Poly1305，24 字节随机 nonce
+  （TS `@noble/curves` + `@noble/ciphers/xsalsa20poly1305`，Rust `crypto_box::SalsaBox`，与 libsodium 逐字节一致）。
+- 正文用 AES-256-GCM：会长大（截图、文件片段），两侧都有硬件加速；曲线运算只裹 32 字节密钥。
+- `L(x) = u32be(len(x)) ‖ x`；`aad` 把方向与身份绑进正文，跨调用、跨设备、跨方向都不可重放。
+
+## 3. 信任写在设备配置里，没有配对
+
+```toml
+# ~/.config/exe/config.toml
+address = "<本机地址>"
+trust   = ["<签发者地址>", "…"]     # 只认这些公钥签的指令
+cloud   = "https://exe.ntnl.io"
+private_key = "<base58 拓展格式>"    # 文件权限 0600
+```
+
+- 设备启动即用**自己的密钥**登记/续约：签名挑战，云端只记地址与在线状态。
+- 人 / Agent 侧只需要知道设备地址；控制台"添加设备"就是填一个地址。
+- 没有配对码、没有 SAS、没有批准签名、没有 bearer 令牌：设备每次请求自签
+  （时间窗 5 分钟 + 一次性 nonce），云端验签即可。
+- 信任在设备本地，云端既不参与也不能改变它。
+
+## 4. 调用与结果
+
+```
+call   = { call_id, issuer, device, issued_at, expires_at, sealed, sig }
+result = { call_id, device, ok, issued_at, sealed, sig }
+```
+
+签名覆盖 `L("eXe/call") ‖ L(call_id) ‖ L(issuer) ‖ L(device) ‖ L(sealed) ‖ u64be(issued_at) ‖ u64be(expires_at)`
+（结果同理，前缀换成 `"eXe/result"`，并多一个 `ok` 字节）。
+
+- 设备只接受 `issuer ∈ trust`、签名由该地址验证通过、未过期、`device == 自己地址` 的调用。
+- 结果密封给 `issuer`，只有签发者能解开。
+- 云端可见且仅可见：`call_id / issuer / device / sealed / sig / 时间 / ok / 状态`。
+
+## 5. 传输
+
+```
+POST /v1/devices/{address}/events        设备订阅（自助登记即开始收指令）
+POST /v1/devices/{address}/calls/{id}/received
+POST /v1/devices/{address}/calls/{id}/result
+POST /api/devices/{address}/calls        签发者投递已签名信封
+GET  /api/calls/{id}                     取回信封（云端不解）
+PUT  /api/identities/{address}           登记/更新身份（挑战-响应自签）
+```
+
+每个请求带 `x-exe-sig`（对 method、path、时间戳、body 哈希签名）与 `x-exe-ts`。
+
+## 6. 本地策略
 
 `~/.config/exe/policy.toml`
 
 ```toml
-allow = ["echo", "sleep"]        # 默认只允许无害工具
-deny  = ["bash"]                 # 显式禁止优先
+allow = ["echo", "sleep", "sysinfo"]   # 默认只允许无害工具
+deny  = ["bash"]                       # 显式禁止优先
 max_runtime_seconds = 60
 max_output_bytes = 262144
-workdir = "~"
 ```
+
+云端看不见调用内容，因此**所有内容相关的判断都只能落在这里**。
