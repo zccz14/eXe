@@ -142,12 +142,15 @@ jobs:
           merge-multiple: true
       # The relay reads this instead of the GitHub API (no credentials, no rate limit).
       - name: Write the release manifest
+        env:
+          # This job has no checkout, so the version comes from the tag.
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           node - <<'JS'
           const { readdirSync, readFileSync, writeFileSync } = require("node:fs");
           const { createHash } = require("node:crypto");
-          const version = require("./package.json").version;
-          const tag = process.env.GITHUB_REF_TYPE === "tag" ? process.env.GITHUB_REF_NAME : `v${version}`;
+          const tag = (process.env.RELEASE_TAG || "").startsWith("v") ? process.env.RELEASE_TAG : "";
+          const version = tag.replace(/^v/, "") || "0.0.0";
           const files = readdirSync("artifacts")
             .sort()
             .map((name) => {
@@ -155,7 +158,7 @@ jobs:
               return { name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
             });
           writeFileSync("artifacts/manifest.json", JSON.stringify({ version, tag, files }, null, 2));
-          console.log(`manifest: ${files.length} files for ${tag}`);
+          console.log(`manifest: ${files.length} files for ${tag || "(no tag)"}`);
           JS
       - uses: softprops/action-gh-release@v2
         with:
