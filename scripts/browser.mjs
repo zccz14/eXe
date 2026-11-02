@@ -1,84 +1,89 @@
-// Emulates the console: holds the only copy of the account private keys.
+// Emulates the console: holds the only copy of the account key, signs calls and
+// opens results. Nothing here ever reaches the relay in the clear.
 import {
+  addressOf,
   b64u,
-  newAccountKeys,
+  buildCall,
+  newIdentity,
   openResult,
-  sealCall,
+  randomBytes,
   signAccount,
-  signApproval,
-  unb64u,
+  signRequest,
+  verifyCall,
 } from "../shared/protocol.ts";
 
+export const now = () => Math.floor(Date.now() / 1000);
+
+/** Signed headers for a device request: no bearer token exists. */
+export function signedHeaders(identity, method, path) {
+  const auth = {
+    method,
+    path,
+    address: addressOf(identity),
+    timestamp: now(),
+    nonce: b64u(randomBytes(16)),
+  };
+  return {
+    "x-exe-timestamp": String(auth.timestamp),
+    "x-exe-nonce": auth.nonce,
+    "x-exe-signature": signRequest(identity.seed, auth),
+  };
+}
+
 export function makeBrowser() {
-  const keys = newAccountKeys();
-  const sigPub = b64u(keys.sigPub);
-  const kexPub = b64u(keys.kexPub);
-  const now = () => Math.floor(Date.now() / 1000);
+  const identity = newIdentity();
+  const address = addressOf(identity);
 
   return {
-    sigPub,
-    kexPub,
+    identity,
+    address,
     async register(base, auth) {
+      const me = await fetch(`${base}/api/me`, { headers: auth }).then((r) => r.json());
       const challenge = await fetch(`${base}/api/account/challenge`, { headers: auth }).then((r) => r.json());
-      const fields = { userId: challenge.user_id ?? (await fetch(`${base}/api/me`, { headers: auth }).then((r) => r.json())).account_id, nonce: challenge.nonce, sigPub, kexPub, issuedAt: now() };
+      const fields = { address, userId: me.account_id, nonce: challenge.nonce, issuedAt: now() };
       const response = await fetch(`${base}/api/account`, {
         method: "PUT",
         headers: { ...auth, "content-type": "application/json" },
-        body: JSON.stringify({ sig_pub: sigPub, kex_pub: kexPub, nonce: fields.nonce, issued_at: fields.issuedAt, sig: signAccount(keys.sigSk, fields) }),
+        body: JSON.stringify({ address, nonce: fields.nonce, issued_at: fields.issuedAt, sig: signAccount(identity.seed, fields) }),
       });
       if (!response.ok) throw new Error(`account registration failed: ${response.status} ${await response.text()}`);
       return response.json();
     },
-    async approve(base, auth, pairing, label) {
-      const fields = {
-        pairingId: pairing.pairing_id,
-        deviceId: pairing.device_id,
-        accountId: pairing.account_id ?? null,
-        accountSigPub: sigPub,
-        accountKexPub: kexPub,
-        deviceSigPub: pairing.device_sig_pub,
-        deviceKexPub: pairing.device_kex_pub,
-        issuedAt: now(),
-      };
-      const response = await fetch(`${base}/api/pairings/${pairing.user_code}`, {
+    async addDevice(base, auth, deviceAddress, label) {
+      const response = await fetch(`${base}/api/devices`, {
         method: "POST",
         headers: { ...auth, "content-type": "application/json" },
-        body: JSON.stringify({ label, issued_at: fields.issuedAt, sig: signApproval(keys.sigSk, fields) }),
+        body: JSON.stringify({ address: deviceAddress, label }),
       });
-      if (!response.ok) throw new Error(`approval failed: ${response.status} ${await response.text()}`);
+      if (!response.ok) throw new Error(`adding the device failed: ${response.status} ${await response.text()}`);
       return response.json();
     },
-    signDeviceCall(deviceId, accountId, deviceKexPub, name, args, ttl = 300) {
+    signCall(deviceAddress, name, args, ttl = 300) {
       const issuedAt = now();
-      const callId = crypto.randomUUID();
-      const sealed = sealCall({
-        callId,
-        deviceId,
-        accountId,
+      return buildCall({
+        seed: identity.seed,
+        issuer: address,
+        device: deviceAddress,
+        callId: crypto.randomUUID(),
         name,
         args: JSON.stringify(args),
         issuedAt,
         expiresAt: issuedAt + ttl,
-        deviceKexPub: unb64u(deviceKexPub),
-        accountSigSeed: keys.sigSk,
       });
-      return { id: callId, ...sealed };
     },
-    async call(base, auth, deviceId, accountId, deviceKexPub, name, args) {
-      const body = this.signDeviceCall(deviceId, accountId, deviceKexPub, name, args);
-      const response = await fetch(`${base}/api/devices/${deviceId}/calls`, {
+    async call(base, auth, deviceAddress, name, args) {
+      const envelope = this.signCall(deviceAddress, name, args);
+      const response = await fetch(`${base}/api/devices/${deviceAddress}/calls`, {
         method: "POST",
         headers: { ...auth, "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(envelope),
       });
       if (!response.ok) throw new Error(`call failed: ${response.status} ${await response.text()}`);
       return response.json();
     },
-    open(callId, deviceId, envelope) {
-      return JSON.parse(openResult({ accountKexSk: keys.kexSk, callId, deviceId, envelope }));
+    open(call, result) {
+      return JSON.parse(openResult({ seed: identity.seed, call, result }));
     },
-    kexSecret: keys.kexSk,
-    sigSeed: keys.sigSk,
-    unb64u,
+    verify: verifyCall,
   };
 }

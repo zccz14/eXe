@@ -1,14 +1,21 @@
-// End-to-end check against a local worker: pairing, signed call over SSE, sealed
-// result, and proof that the worker never holds anything it could sign with.
+// End-to-end check against a local worker: self-registration, signed requests,
+// sealed call over SSE, sealed result, and proof that the relay never holds
+// anything it could sign with or read.
 import { spawn, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { startJwks } from "./jwks.mjs";
-import { makeBrowser } from "./browser.mjs";
-import { b64u, openCall, sealResult, shortAuthenticationString, signResult, unb64u, verifyCall } from "../shared/protocol.ts";
-import { ed25519 } from "@noble/curves/ed25519.js";
-import { x25519 } from "@noble/curves/ed25519.js";
-import { sha256 } from "@noble/hashes/sha2.js";
+import { makeBrowser, now, signedHeaders } from "./browser.mjs";
+import {
+  addressOf,
+  b64u,
+  buildResult,
+  newIdentity,
+  openCall,
+  randomBytes,
+  signRequest,
+  verifyCall,
+} from "../shared/protocol.ts";
 
 const PORT = 8787;
 const base = `http://127.0.0.1:${PORT}`;
@@ -34,7 +41,7 @@ async function waitForWorker() {
 async function main() {
   writeDevVars();
   spawnSync("npx", ["wrangler", "d1", "execute", "exe", "--local", "--command",
-    "DROP TABLE IF EXISTS calls; DROP TABLE IF EXISTS devices; DROP TABLE IF EXISTS pairings; DROP TABLE IF EXISTS accounts; DROP TABLE IF EXISTS account_challenges;"],
+    "DROP TABLE IF EXISTS calls; DROP TABLE IF EXISTS devices; DROP TABLE IF EXISTS agents; DROP TABLE IF EXISTS accounts; DROP TABLE IF EXISTS account_challenges; DROP TABLE IF EXISTS request_nonces;"],
     { stdio: "ignore" });
   spawnSync("npx", ["wrangler", "d1", "execute", "exe", "--local", "--file", "worker/src/schema.sql"], { stdio: "inherit" });
   const dev = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--ip", "127.0.0.1"], {
@@ -59,7 +66,7 @@ async function main() {
     console.log("\nintegration: ok");
   } catch (error) {
     console.error("FAILED:", error instanceof Error ? error.message : error);
-    console.error(devLog.slice(-2000));
+    console.error(devLog.slice(-3000));
     cleanup();
     process.exit(1);
   }
@@ -68,97 +75,83 @@ async function main() {
 }
 
 async function run() {
+  // --- the browser owns the only account key ------------------------------
   const userId = randomUUID();
   const auth = { authorization: `Bearer ${jwks.mint(userId)}` };
-
-  // --- the browser creates the account key and registers only the public half ---
   const browser = makeBrowser();
+
   const meBefore = await fetch(`${base}/api/me`, { headers: auth }).then((r) => r.json());
   assert.equal(meBefore.registered, false);
   assert.equal(meBefore.custody, "browser");
+  assert.equal((await fetch(`${base}/api/devices`, { headers: auth })).status, 200, "listing devices needs no key");
 
-  const unregistered = await fetch(`${base}/api/devices`, { headers: auth });
-  assert.equal(unregistered.status, 200, "reading devices needs no key");
   await browser.register(base, auth);
   const me = await fetch(`${base}/api/me`, { headers: auth }).then((r) => r.json());
-  assert.equal(me.sig_pub, browser.sigPub);
-  assert.equal(me.kex_pub, browser.kexPub);
-  assert.equal(JSON.stringify(me).match(/sig_sk|kex_sk|seed/i), null, "the worker never reports private material");
+  assert.equal(me.address, browser.address);
+  assert.equal(JSON.stringify(me).match(/secret|seed|sig_sk/i), null, "the relay never reports private material");
 
-  // --- device side ---
-  const deviceSigSeed = randomBytes(32);
-  const deviceKexSeed = randomBytes(32);
-  const deviceSigPub = b64u(ed25519.getPublicKey(deviceSigSeed));
-  const deviceKexPub = b64u(x25519.getPublicKey(deviceKexSeed));
-  const deviceToken = b64u(randomBytes(32));
-  const deviceSecret = b64u(randomBytes(32));
-  const hex = (bytes) => Buffer.from(bytes).toString("hex");
+  // --- a device is added by address; there is nothing to pair --------------
+  const device = newIdentity();
+  const deviceAddress = addressOf(device);
+  const added = await browser.addDevice(base, auth, deviceAddress, "integration");
+  assert.equal(added.device.address, deviceAddress);
+  assert.equal(added.device.online, false);
+  assert.equal(added.device.hostname, null, "the relay knows nothing about it yet");
+  const devices = await fetch(`${base}/api/devices`, { headers: auth }).then((r) => r.json());
+  assert.equal(devices.devices.length, 1);
 
-  const pairing = await fetch(`${base}/v1/pairings`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      dev_sig_pub: deviceSigPub,
-      dev_kex_pub: deviceKexPub,
-      secret_hash: hex(sha256(new TextEncoder().encode(deviceSecret))),
-      token_hash: hex(sha256(new TextEncoder().encode(deviceToken))),
-      hostname: "integration-host",
-      platform: "linux-x86_64",
-      version: "0.1.0",
-    }),
-  }).then((r) => r.json());
+  // --- the device self-registers: one signed request, single-use nonce -----
+  const regPath = `/v1/agents/${deviceAddress}`;
+  const regBody = JSON.stringify({ hostname: "integration-host", platform: "linux-x86_64", version: "0.1.0" });
+  const regHeaders = signedHeaders(device, "PUT", regPath);
+  const reg = await fetch(`${base}${regPath}`, {
+    method: "PUT",
+    headers: { ...regHeaders, "content-type": "application/json" },
+    body: regBody,
+  });
+  assert.equal(reg.status, 200, await reg.text());
+  const replayed = await fetch(`${base}${regPath}`, {
+    method: "PUT",
+    headers: { ...regHeaders, "content-type": "application/json" },
+    body: regBody,
+  });
+  assert.equal(replayed.status, 401, "a captured request cannot be replayed");
 
-  const view = await fetch(`${base}/api/pairings/${pairing.user_code}`, { headers: auth }).then((r) => r.json());
-  assert.equal(view.sas, shortAuthenticationString(browser.sigPub, deviceSigPub));
-  assert.equal(view.account_sig_pub, browser.sigPub);
-
-  // A different browser cannot approve on behalf of the registered key.
-  const impostor = makeBrowser();
-  await assert.rejects(() => impostor.approve(base, auth, { ...view, account_id: userId }, "impostor"));
-
-  const approved = await browser.approve(base, auth, { ...view, account_id: userId }, "integration");
-  const deviceId = approved.device.id;
-  assert.equal(approved.sas, view.sas);
-
-  const polled = await fetch(`${base}/v1/pairings/${pairing.pairing_id}`, {
-    headers: { authorization: `Bearer ${deviceSecret}` },
-  }).then((r) => r.json());
-  assert.equal(polled.status, "approved");
-  const approval = polled.approval;
-  const lp = (bytes) => {
-    const out = new Uint8Array(4 + bytes.length);
-    new DataView(out.buffer).setUint32(0, bytes.length, false);
-    out.set(bytes, 4);
-    return out;
+  const stale = {
+    method: "PUT",
+    path: regPath,
+    address: deviceAddress,
+    timestamp: now() - 3600,
+    nonce: b64u(randomBytes(16)),
   };
-  const approvalTranscript = Buffer.concat(
-    [
-      Buffer.from("eXe/v1/approval\0"),
-      ...["pairingId", "deviceId", "accountId", "accountSigPub", "accountKexPub", "deviceSigPub", "deviceKexPub"].map((key) =>
-        lp(new TextEncoder().encode(approval[key])),
-      ),
-      (() => {
-        const issued = new Uint8Array(8);
-        new DataView(issued.buffer).setBigUint64(0, BigInt(approval.issuedAt), false);
-        return issued;
-      })(),
-    ].map((part) => Buffer.from(part)),
-  );
-  assert.ok(
-    ed25519.verify(
-      new Uint8Array(Buffer.from(approval.sig, "base64url")),
-      new Uint8Array(approvalTranscript),
-      browser.unb64u(browser.sigPub),
-    ),
-    "the device verifies the browser-signed approval against the pinned key",
-  );
-  assert.equal(approval.deviceSigPub, deviceSigPub);
+  const staleAttempt = await fetch(`${base}${regPath}`, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      "x-exe-timestamp": String(stale.timestamp),
+      "x-exe-nonce": stale.nonce,
+      "x-exe-signature": signRequest(device.seed, stale),
+    },
+    body: regBody,
+  });
+  assert.equal(staleAttempt.status, 401, "a signed request outside the window is refused");
 
-  // --- SSE + signed call ---
-  const bootId = randomUUID();
+  const unsigned = await fetch(`${base}${regPath}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: regBody,
+  });
+  assert.equal(unsigned.status, 401, "self-registration needs the device key");
+
+  const online = await fetch(`${base}/api/devices`, { headers: auth }).then((r) => r.json());
+  assert.equal(online.devices[0].online, true);
+  assert.equal(online.devices[0].hostname, "integration-host");
+
+  // --- SSE with self-signed auth ------------------------------------------
+  const streamPath = `/v1/agents/${deviceAddress}/stream`;
   const controller = new AbortController();
-  const stream = await fetch(`${base}/v1/devices/${deviceId}/events`, {
-    headers: { authorization: `Bearer ${deviceToken}`, "x-exe-boot-id": bootId, "x-exe-version": "0.1.0" },
+  const stream = await fetch(`${base}${streamPath}`, {
+    headers: signedHeaders(device, "GET", streamPath),
     signal: controller.signal,
   });
   assert.equal(stream.status, 200);
@@ -182,132 +175,131 @@ async function run() {
     }
     throw new Error(`timed out waiting for ${name}`);
   };
+  await nextEvent("hello");
 
-  const created = await browser.call(base, auth, deviceId, userId, deviceKexPub, "echo", { text: "hello eXe" });
-  const callId = created.call.id;
+  // --- a signed call the device alone can open ----------------------------
+  const created = await browser.call(base, auth, deviceAddress, "echo", { text: "hello eXe" });
+  const callId = created.call.call_id;
   const delivered = await nextEvent("call");
-  assert.equal(delivered.id, callId);
-  assert.ok(
-    verifyCall(
-      browser.sigPub,
-      {
-        callId: delivered.id,
-        deviceId: delivered.device_id,
-        accountId: delivered.account_id,
-        eph: unb64u(delivered.eph),
-        nonce: unb64u(delivered.nonce),
-        ciphertext: unb64u(delivered.ct),
-        issuedAt: delivered.issued_at,
-        expiresAt: delivered.expires_at,
-      },
-      delivered.sig,
-    ),
-    "the device can verify the call against the pinned account key",
-  );
-  const opened = openCall({
-    deviceKexSk: deviceKexSeed,
-    callId: delivered.id,
-    deviceId,
-    accountId: userId,
-    eph: unb64u(delivered.eph),
-    nonce: unb64u(delivered.nonce),
-    ciphertext: unb64u(delivered.ct),
-  });
+  assert.equal(delivered.call_id, callId);
+  assert.ok(verifyCall(delivered), "the device can verify the issuer signature");
+  const opened = openCall({ seed: device.seed, call: delivered });
   assert.equal(opened.name, "echo");
   assert.deepEqual(JSON.parse(opened.args), { text: "hello eXe" });
-  assert.equal(JSON.stringify(delivered).includes("echo"), false, "the wire carries no tool name");
-  assert.equal(JSON.stringify(delivered).includes("hello eXe"), false, "nor the arguments");
+  const wire = JSON.stringify(delivered);
+  assert.equal(wire.includes("echo"), false, "the wire carries no tool name");
+  assert.equal(wire.includes("hello eXe"), false, "nor the arguments");
 
-  // Unsigned and tampered calls are refused before they ever reach a device.
-  const unsigned = await fetch(`${base}/api/devices/${deviceId}/calls`, {
+  // Editing the sealed body after signing is refused before it is queued.
+  const forged = browser.signCall(deviceAddress, "echo", { text: "honest" });
+  forged.sealed = b64u(new Uint8Array(160));
+  const tampered = await fetch(`${base}/api/devices/${deviceAddress}/calls`, {
+    method: "POST",
+    headers: { ...auth, "content-type": "application/json" },
+    body: JSON.stringify(forged),
+  });
+  assert.equal(tampered.status, 403);
+
+  const unsolicited = await fetch(`${base}/api/devices/${deviceAddress}/calls`, {
     method: "POST",
     headers: { ...auth, "content-type": "application/json" },
     body: JSON.stringify({ name: "echo", args: "{}" }),
   });
-  assert.equal(unsigned.status, 400);
-  const forgedCall = browser.signDeviceCall(deviceId, userId, deviceKexPub, "echo", { text: "honest" });
-  forgedCall.ct = b64u(new Uint8Array(48).fill(7));
-  const tampered = await fetch(`${base}/api/devices/${deviceId}/calls`, {
-    method: "POST",
-    headers: { ...auth, "content-type": "application/json" },
-    body: JSON.stringify(forgedCall),
-  });
-  assert.equal(tampered.status, 403, "a call whose args changed after signing is refused");
+  assert.equal(unsolicited.status, 400);
 
-  await fetch(`${base}/v1/devices/${deviceId}/calls/${callId}/received`, {
+  // Another account may keep the same address in its own book: the relay routes
+  // but does not decide trust. What stops it is the device's trust list.
+  const stranger = makeBrowser();
+  const strangerAuth = { authorization: `Bearer ${jwks.mint(randomUUID())}` };
+  await stranger.register(base, strangerAuth);
+  await stranger.addDevice(base, strangerAuth, deviceAddress, "not mine");
+  const strangerCall = stranger.signCall(deviceAddress, "echo", { text: "from a stranger" });
+  assert.ok(verifyCall(strangerCall), "the stranger's envelope is well formed");
+  const strangerQueued = await fetch(`${base}/api/devices/${deviceAddress}/calls`, {
     method: "POST",
-    headers: { authorization: `Bearer ${deviceToken}` },
-  }).then((r) => assert.equal(r.status, 204));
-
-  const forged = await fetch(`${base}/v1/devices/${deviceId}/calls/${callId}/result`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${deviceToken}`, "content-type": "application/json" },
-    body: JSON.stringify({ v: 1, ok: true, eph: b64u(new Uint8Array(32)), nonce: b64u(new Uint8Array(12)), ct: b64u(new Uint8Array(32)), sig: b64u(new Uint8Array(64)) }),
+    headers: { ...strangerAuth, "content-type": "application/json" },
+    body: JSON.stringify(strangerCall),
   });
-  assert.equal(forged.status, 403, "a result without the device key is refused");
+  assert.equal(strangerQueued.status, 200, "the relay only queues what the sender signed");
+  assert.notEqual(strangerCall.issuer, browser.address, "but a device that trusts only the browser will discard it");
+  assert.equal(
+    verifyCall({ ...strangerCall, issuer: browser.address }),
+    false,
+    "and nobody can sign in the browser's name",
+  );
+
+  // --- receipts and results ------------------------------------------------
+  const receivedPath = `/v1/agents/${deviceAddress}/calls/${callId}/received`;
+  const received = await fetch(`${base}${receivedPath}`, { method: "POST", headers: signedHeaders(device, "POST", receivedPath) });
+  assert.equal(received.status, 204);
+
+  const resultPath = `/v1/agents/${deviceAddress}/calls/${callId}/result`;
+  const forgedResult = await fetch(`${base}${resultPath}`, {
+    method: "POST",
+    headers: { ...signedHeaders(device, "POST", resultPath), "content-type": "application/json" },
+    body: JSON.stringify({ call_id: callId, device: deviceAddress, ok: true, issued_at: now(), sealed: b64u(new Uint8Array(140)), sig: b64u(new Uint8Array(64)) }),
+  });
+  assert.equal(forgedResult.status, 403, "the relay refuses a result the device did not sign");
 
   const plaintext = JSON.stringify({ ok: true, output: { tool: "echo", text: "SEALED-MARKER-42" } });
-  const sealed = sealResult({ callId, deviceId, ok: true, accountKexPub: browser.unb64u(browser.kexPub), plaintext });
-  const signature = signResult(deviceSigSeed, {
-    callId,
-    deviceId,
-    ok: true,
-    eph: browser.unb64u(sealed.eph),
-    nonce: browser.unb64u(sealed.nonce),
-    ciphertext: browser.unb64u(sealed.ct),
-  });
-  const posted = await fetch(`${base}/v1/devices/${deviceId}/calls/${callId}/result`, {
+  const result = buildResult({ seed: device.seed, call: delivered, ok: true, plaintext, issuedAt: now() });
+  const posted = await fetch(`${base}${resultPath}`, {
     method: "POST",
-    headers: { authorization: `Bearer ${deviceToken}`, "content-type": "application/json" },
-    body: JSON.stringify({ ...sealed, sig: signature }),
+    headers: { ...signedHeaders(device, "POST", resultPath), "content-type": "application/json" },
+    body: JSON.stringify(result),
   });
-  assert.equal(posted.status, 204);
+  assert.equal(posted.status, 204, await posted.text());
 
-  // --- only the browser can open it ---
+  // At-least-once: the same envelope may arrive twice and settles once.
+  const again = await fetch(`${base}${resultPath}`, {
+    method: "POST",
+    headers: { ...signedHeaders(device, "POST", resultPath), "content-type": "application/json" },
+    body: JSON.stringify(result),
+  });
+  assert.equal(again.status, 204, "a repeated envelope is accepted as the same outcome");
+
+  const conflicting = buildResult({ seed: device.seed, call: delivered, ok: false, plaintext: '{"ok":false}', issuedAt: now() });
+  const conflict = await fetch(`${base}${resultPath}`, {
+    method: "POST",
+    headers: { ...signedHeaders(device, "POST", resultPath), "content-type": "application/json" },
+    body: JSON.stringify(conflicting),
+  });
+  assert.equal(conflict.status, 409, "a different outcome for a settled call is refused");
+
+  // --- only the issuing browser can read it --------------------------------
   const detail = await fetch(`${base}/api/calls/${callId}`, { headers: auth }).then((r) => r.json());
   assert.equal(detail.call.status, "succeeded");
-  assert.equal(detail.result, undefined, "the API hands back an envelope, not plaintext");
-  assert.ok(detail.envelope, "the envelope is returned verbatim");
-  assert.deepEqual(browser.open(callId, deviceId, detail.envelope), JSON.parse(plaintext));
-  assert.throws(() => {
-    const other = makeBrowser();
-    other.open(callId, deviceId, detail.envelope);
-  }, "another browser cannot open the envelope");
+  assert.equal(detail.call.has_result, true);
+  assert.ok(detail.result, "the envelope is returned verbatim");
+  assert.equal(JSON.stringify(detail).includes("SEALED-MARKER-42"), false, "no plaintext in the API");
+  assert.deepEqual(browser.open(detail.call, detail.result), JSON.parse(plaintext));
+  assert.throws(() => stranger.open(detail.call, detail.result), "another browser cannot open the envelope");
 
-  const stored = await fetch(`${base}/api/calls?device_id=${deviceId}`, { headers: auth }).then((r) => r.json());
-  assert.equal(JSON.stringify(stored.calls).includes("SEALED-MARKER-42"), false);
+  const stored = await fetch(`${base}/api/calls?device=${deviceAddress}`, { headers: auth }).then((r) => r.json());
+  assert.equal(stored.calls.length, 1);
+  assert.equal(JSON.stringify(stored).includes("SEALED-MARKER-42"), false);
 
-  // --- a fresh boot marks the in-flight call lost ---
-  const second = await browser.call(base, auth, deviceId, userId, deviceKexPub, "echo", { text: "second" });
-  const secondDelivered = await nextEvent("call");
-  assert.equal(secondDelivered.id, second.call.id);
-  controller.abort();
-  await fetch(`${base}/v1/devices/${deviceId}/events`, {
-    headers: { authorization: `Bearer ${deviceToken}`, "x-exe-boot-id": randomUUID(), "x-exe-version": "0.1.0" },
-    signal: AbortSignal.timeout(1500),
-  }).catch(() => undefined);
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  const lost = await fetch(`${base}/api/calls/${second.call.id}`, { headers: auth }).then((r) => r.json());
-  assert.equal(lost.call.status, "failed");
-  assert.equal(lost.call.failure_code, "device_restarted");
+  // --- cancelling something that was never delivered -----------------------
+  const idle = newIdentity();
+  const idleAddress = addressOf(idle);
+  await browser.addDevice(base, auth, idleAddress, "idle");
+  const pending = await browser.call(base, auth, idleAddress, "sleep", { seconds: 5 });
+  const cancelled = await fetch(`${base}/api/calls/${pending.call.call_id}/cancel`, { method: "POST", headers: auth });
+  assert.equal(cancelled.status, 204);
+  const cancelledView = await fetch(`${base}/api/calls/${pending.call.call_id}`, { headers: auth }).then((r) => r.json());
+  assert.equal(cancelledView.call.status, "cancelled");
 
-  // --- revocation ---
-  await fetch(`${base}/api/devices/${deviceId}`, { method: "DELETE", headers: auth }).then((r) => assert.equal(r.status, 204));
-  const revoked = await fetch(`${base}/v1/devices/${deviceId}/heartbeat`, {
+  // --- removing a device stops new calls -----------------------------------
+  const removed = await fetch(`${base}/api/devices/${idleAddress}`, { method: "DELETE", headers: auth });
+  assert.equal(removed.status, 204);
+  const blocked = await fetch(`${base}/api/devices/${idleAddress}/calls`, {
     method: "POST",
-    headers: { authorization: `Bearer ${deviceToken}` },
+    headers: { ...auth, "content-type": "application/json" },
+    body: JSON.stringify(browser.signCall(idleAddress, "echo", {})),
   });
-  assert.equal(revoked.status, 401);
-}
+  assert.equal(blocked.status, 404);
 
-function lpString(value) {
-  return lpBytes(Buffer.from(value, "utf8"));
-}
-function lpBytes(bytes) {
-  const out = Buffer.alloc(4 + bytes.length);
-  out.writeUInt32BE(bytes.length, 0);
-  Buffer.from(bytes).copy(out, 4);
-  return out;
+  controller.abort();
 }
 
 await main();
