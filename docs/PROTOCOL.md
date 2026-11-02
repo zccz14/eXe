@@ -189,6 +189,7 @@ call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态, 
 | POST | `/api/devices/{address}/calls` | 投递信封（只接受该设备声明信任的签发者） |
 | GET | `/api/calls?device={address}` · `/api/calls/{call_id}` | 状态与信封（浏览器自行解封） |
 | GET | `/api/calls/{call_id}/blob` | 取回附件的密文（只有签发者能取） |
+| POST | `/api/calls/{call_id}/ack` | 结果已取走；云端随即删除这一行（含附件） |
 | POST | `/api/calls/{call_id}/cancel` | 请求取消 |
 
 控制台没有注册这一步：地址由浏览器自己生成，第一次请求就生效。归属由签名回答，
@@ -212,9 +213,12 @@ expired     已过 expires_at
 lost        被一个已经死掉的进程接手过，结果未知（不重投，等一封新调用）
 ```
 
-**保留期 7 天。** 已结案（`succeeded` / `failed` / `cancelled` / `expired` / `lost`）的调用
-在结案 7 天后被删除；`queued` / `received` 永远不动。`calls` 既是队列也是唯一的业务真相，
-而一行可以装下以 MB 计的结果——没有保留期，一次放大就会把整个中继写到不可写。
+**调用是临时的。** 设备交出结果、签发者把结果取走之后，这一行就没有继续存在的理由：
+控制台取到结果后自己确认（`POST /api/calls/{call_id}/ack`），云端立刻删除，附件一并删除；
+没有确认的，结案 **30 分钟**后由 cron 兜底删除。`queued` / `received` 永远不主动删——它们还
+没结案，最多活到 `expires_at`。
+
+eXe 不做审计、不做归档，也不替任何一方留档：要留历史，双方各自保存。
 
 ## 7. 执行限额
 

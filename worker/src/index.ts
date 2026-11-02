@@ -34,20 +34,24 @@ function withCors(request: Request, env: Env, response: Response): Response {
 const ADDRESS = "([1-9A-HJ-NP-Za-km-z]{32,64})";
 const CALL_ID = "([0-9a-zA-Z-]{8,64})";
 
-/** How long a settled call stays readable. D1 is 10 GB and a row can be megabytes. */
-const CALL_RETENTION_DAYS = 7;
+/**
+ * How long a settled call waits for its issuer to pick it up. The relay is an
+ * exchange, not an archive: the normal path is an explicit `ack` that deletes
+ * the row the moment the caller has the result, and this is only the fallback
+ * for a caller that closed its browser first.
+ */
+const CALL_RETENTION_MINUTES = 30;
 /** Rows per sweep: every deleted row is a row written, so this is a budget. */
 const RETENTION_BATCH = 2000;
 
 export default {
   /**
-   * Retention, hourly. A call that is over and older than the window is deleted;
-   * nothing queued, received or unsettled is ever touched. Firing once an hour
-   * rather than once a day keeps a backlog from growing faster than the sweeper.
+   * The fallback sweep. A call that is over and was never picked up is deleted;
+   * nothing queued, received or unsettled is ever touched.
    */
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    const deleted = await deleteSettledCalls(env, now() - CALL_RETENTION_DAYS * 24 * 60 * 60, RETENTION_BATCH);
-    console.log(`retention: deleted ${deleted} settled calls older than ${CALL_RETENTION_DAYS} days`);
+    const deleted = await deleteSettledCalls(env, now() - CALL_RETENTION_MINUTES * 60, RETENTION_BATCH);
+    console.log(`retention: deleted ${deleted} settled calls nobody picked up within ${CALL_RETENTION_MINUTES} minutes`);
   },
 
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -96,6 +100,8 @@ export default {
           if (match && method === "GET") return await consoleApi.readCall(env, address, match[1]!);
           match = path.match(new RegExp(`^/api/calls/${CALL_ID}/blob$`));
           if (match && method === "GET") return await consoleApi.readBlob(env, address, match[1]!);
+          match = path.match(new RegExp(`^/api/calls/${CALL_ID}/ack$`));
+          if (match && method === "POST") return await consoleApi.ackCall(env, address, match[1]!);
           match = path.match(new RegExp(`^/api/calls/${CALL_ID}/cancel$`));
           if (match && method === "POST") return await consoleApi.cancelCall(env, address, match[1]!);
           throw new ApiError(404, "unknown console endpoint");

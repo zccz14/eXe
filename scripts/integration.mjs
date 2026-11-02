@@ -533,14 +533,47 @@ async function run() {
   const strangerRead = await fetch(`${base}${readPath}`, { headers: signedHeaders(stranger.identity, "GET", readPath) });
   assert.equal(strangerRead.status, 404, "an attachment belongs to the console that signed the call");
 
-  // Retention takes the attachment with the row: one lifecycle, one delete.
-  d1(`UPDATE calls SET settled_at=${now() - 8 * 24 * 60 * 60} WHERE call_id='${heavyEnvelope.call_id}'`);
-  assert.equal((await fetch(`${base}/__scheduled?cron=${encodeURIComponent("41 * * * *")}`)).status, 200);
+  // Picking it up ends the call and takes the attachment with it.
+  const heavyAck = `/api/calls/${heavyEnvelope.call_id}/ack`;
+  assert.equal(
+    (await fetch(`${base}${heavyAck}`, { method: "POST", headers: signedHeaders(browser.identity, "POST", heavyAck) })).status,
+    204,
+    "the issuer takes the result",
+  );
   assert.equal((await fetch(`${base}${readPath}`, { headers: signedHeaders(browser.identity, "GET", readPath) })).status, 404, "the attachment goes with the call");
+  assert.equal((await fetch(`${base}${heavyAck}`, { method: "POST", headers: signedHeaders(browser.identity, "POST", heavyAck) })).status, 404, "picking up twice is a no-op");
+
+  // --- picking up a result ends the call's life ----------------------------
+  // The relay is an exchange, not an archive: an explicit ack deletes the row.
+  const pickup = browser.signCall(bulkAddress, "shell", { command: "printf pickup" });
+  assert.equal((await issue(pickup)).status, 200);
+  assert.equal(await settleBulk(pickup, JSON.stringify({ ok: true, output: { tool: "shell", stdout: "picked" } })), 204);
+  const ackPath = `/api/calls/${pickup.call_id}/ack`;
+  assert.equal(
+    (await fetch(`${base}${ackPath}`, { method: "POST", headers: signedHeaders(stranger.identity, "POST", ackPath) })).status,
+    404,
+    "only the console that signed the call may take its result",
+  );
+  assert.equal(
+    (await fetch(`${base}${ackPath}`, { method: "POST", headers: signedHeaders(browser.identity, "POST", ackPath) })).status,
+    204,
+    "picking up deletes the row",
+  );
+  await assert.rejects(browser.request(base, "GET", `/api/calls/${pickup.call_id}`), /404/, "the call is gone the moment it is picked up");
+
+  // Nothing to hand over yet: a call that has not settled cannot be collected.
+  const early = browser.signCall(bulkAddress, "shell", { command: "printf early" });
+  assert.equal((await issue(early)).status, 200);
+  const earlyAck = `/api/calls/${early.call_id}/ack`;
+  assert.equal(
+    (await fetch(`${base}${earlyAck}`, { method: "POST", headers: signedHeaders(browser.identity, "POST", earlyAck) })).status,
+    409,
+    "a result that does not exist cannot be picked up",
+  );
 
   // Retention: settled and old is deleted, settled and fresh is not.
   const staleId = crypto.randomUUID();
-  const staleAt = now() - 8 * 24 * 60 * 60;
+  const staleAt = now() - 40 * 60;
   d1(`INSERT INTO calls(call_id,device_address,issuer,sealed,sig,issued_at,expires_at,status,settled_at,created_at) VALUES('${staleId}','${bulkAddress}','${browser.address}','x','x',${staleAt},${staleAt + 300},'succeeded',${staleAt},${staleAt})`);
   const scheduled = await fetch(`${base}/__scheduled?cron=${encodeURIComponent("41 * * * *")}`);
   assert.equal(scheduled.status, 200, "the retention cron runs");
