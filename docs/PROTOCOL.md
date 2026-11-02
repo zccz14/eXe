@@ -41,12 +41,11 @@ x25519_priv = clamp(sha512(seed)[0..32])
 cloud   = "https://exe.ntnl.io"
 secret  = "<base58(seed32 ‖ pub32)>"
 trust   = ["<签发者地址>", …]      # 只接受这些地址签发的指令
-label   = "mac-mini"
 ```
 
 - `secret` 是设备唯一的身份材料，第一次运行 `exe run` 时本机生成，从不外传；
   `exe trust <地址>` 编辑信任列表，重启后生效。
-- 设备启动时用自己的密钥向云端**自登记**：一次自签请求，带上 `hostname` / `platform` /
+- 设备启动时用自己的密钥向云端**自登记**：一次自签请求，带上 `platform` /
   `version` / `trust` / `run_id`。云端记下这些，只是为了少发：`trust` 是设备自己写的那份
   列表的**副本**，它只能用来把设备本来就会拒绝的调用挡在门外。副本在注册时刷新，
   因此最多和设备配置一样旧，绝不会比设备更宽松——设备仍然逐封验证，它是唯一权威。
@@ -153,7 +152,7 @@ lost  = 它被一个已经不存在的进程接手过，结果未知
 
 ```
 call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
-设备登记：hostname, platform, version, trust(副本), run_id, 首次/最后活跃
+设备登记：platform, version, trust(副本), run_id, 首次/最后活跃
 ```
 
 看不到：工具名、参数、输出、结果正文。云端因此也做不了任何内容相关的判断——
@@ -165,7 +164,7 @@ call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| PUT | `/v1/devices/{address}` | 自登记/续约（`hostname`/`platform`/`version`/`trust`/`run_id`） |
+| PUT | `/v1/devices/{address}` | 自登记/续约（`platform`/`version`/`trust`/`run_id`） |
 | GET | `/v1/devices/{address}/stream` | SSE：`hello` / `call` / `cancel` / `heartbeat` |
 | POST | `/v1/devices/{address}/calls/{call_id}/received` | 收到（唯一的妥投证据） |
 | POST | `/v1/devices/{address}/calls/{call_id}/result` | 回传密封结果 |

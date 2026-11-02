@@ -115,7 +115,6 @@ fn status() -> Result<()> {
             println!("config        {}", config::config_path().display());
             println!("address       {}", cfg.address()?);
             println!("relay         {}", cfg.cloud);
-            println!("label         {}", cfg.label);
             if cfg.trust.is_empty() {
                 println!("trust         (empty)");
             } else {

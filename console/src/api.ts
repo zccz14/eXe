@@ -58,7 +58,6 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 export interface DeviceStatus {
   address: string;
   registered: boolean;
-  hostname: string | null;
   platform: string | null;
   version: string | null;
   run_id: string | null;

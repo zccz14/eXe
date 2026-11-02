@@ -67,7 +67,6 @@ export async function registerDevice(request: Request, env: Env, address: string
   const restarted = previous !== null && previous.run_id !== run;
   const startedAt = previous === null || restarted ? now() : previous.run_started_at;
   await touchDevice(env, address, {
-    hostname: text(input.hostname, "hostname", 80),
     platform: text(input.platform, "platform", 40),
     version: text(input.version, "version", 20),
     trust,

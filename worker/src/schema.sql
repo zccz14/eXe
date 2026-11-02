@@ -8,7 +8,6 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS devices (
   address       TEXT PRIMARY KEY,   -- base58 Ed25519 public key
-  hostname      TEXT NOT NULL,
   platform      TEXT NOT NULL,
   version       TEXT NOT NULL,
   -- 设备声明的信任地址，逗号分隔，由设备自己上传。云端拿到的只是一份副本：
