@@ -410,18 +410,18 @@ export function verifyResult(result: ResultEnvelope): boolean {
 /**
  * Every request is self-signed: no bearer token exists. `/v1/*` takes the address
  * from the path and `/api/*` from `x-exe-address`, but both sign this same
- * transcript, so neither can speak for an address it cannot sign for. The relay
- * keeps the nonce until the timestamp falls out of the window, so a captured
- * request cannot be replayed.
+ * transcript, so neither can speak for an address it cannot sign for.
+ *
+ * There is no nonce in here on purpose. A captured request is harmless because
+ * every write it can reach is keyed by a `call_id` the sender signed, so replaying
+ * it restates a row instead of causing a second effect (see docs/THREAT-MODEL.md).
  */
 export interface RequestAuth {
   method: string;
-  /** Request path exactly as sent, e.g. `/v1/agents/<address>/stream`. */
+  /** Request path exactly as sent, e.g. `/v1/devices/<address>/stream`. */
   path: string;
   address: string;
   timestamp: number;
-  /** base64url of 16 random bytes; single use per address. */
-  nonce: string;
 }
 
 export function requestTranscript(auth: RequestAuth): Uint8Array {
@@ -431,7 +431,6 @@ export function requestTranscript(auth: RequestAuth): Uint8Array {
     lp(utf8(auth.path)),
     lp(utf8(auth.address)),
     u64be(auth.timestamp),
-    lp(utf8(auth.nonce)),
   );
 }
 export function signRequest(seed: Uint8Array, auth: RequestAuth): string {
@@ -453,12 +452,10 @@ export function verifyRequest(auth: RequestAuth, signature: string): boolean {
 export function requestHeaders(identity: Identity, method: string, path: string): Record<string, string> {
   const address = addressOf(identity);
   const timestamp = Math.floor(Date.now() / 1000);
-  const nonce = b64u(randomBytes(16));
   return {
     "x-exe-address": address,
     "x-exe-timestamp": String(timestamp),
-    "x-exe-nonce": nonce,
-    "x-exe-signature": signRequest(identity.seed, { method, path, address, timestamp, nonce }),
+    "x-exe-signature": signRequest(identity.seed, { method, path, address, timestamp }),
   };
 }
 
