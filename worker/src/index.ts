@@ -68,6 +68,12 @@ export default {
 
       // --- client binaries: latest GitHub Release, proxied -------------------
       if (path === "/api/releases/latest" && method === "GET") return withCors(request, env, await releases.latest(env));
+      // One stable address for the installer, so the one-liner never changes:
+      // the bytes are release assets like every other file, and the release that
+      // carries them is the release whose binary they install.
+      if ((path === "/install.sh" || path === "/install.ps1") && method === "GET") {
+        return Response.redirect(`${url.origin}/download${path}`, 302);
+      }
       const asset = path.match(/^\/download\/([A-Za-z0-9][A-Za-z0-9._-]{0,120})$/);
       if (asset && method === "GET") return await releases.download(env, asset[1]!);
 

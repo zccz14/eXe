@@ -135,11 +135,16 @@ jobs:
     steps:
       # Only the desktop archives belong in a user-facing release; the mobile
       # libraries stay as CI artifacts for the app builds.
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: exe-*
           path: artifacts
           merge-multiple: true
+      # The installers ship with the release they install, so `curl .../install.sh`
+      # always matches the binary it is about to download.
+      - name: Ship the installers
+        run: cp scripts/install.sh scripts/install.ps1 artifacts/
       # The relay reads this instead of the GitHub API (no credentials, no rate limit).
       - name: Write the release manifest
         env:

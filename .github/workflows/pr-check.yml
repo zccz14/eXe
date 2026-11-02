@@ -67,6 +67,8 @@ jobs:
         run: pnpm test:integration
       - name: End-to-end with the real binary
         run: pnpm test:client
+      - name: End-to-end through MCP (a harness calling a device)
+        run: pnpm test:mcp
 
   mobile:
     name: mobile libraries

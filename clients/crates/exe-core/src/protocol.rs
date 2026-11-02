@@ -58,6 +58,41 @@ impl CallEnvelope {
         Ok(())
     }
 
+    /// Caller side: seal a command to a device address and sign the envelope.
+    /// `plaintext` is the `SealedCall` JSON, so this file never learns the shape
+    /// of a tool's arguments.
+    pub fn build(
+        identity: &Identity,
+        device: &str,
+        call_id: &str,
+        plaintext: &[u8],
+        issued_at: u64,
+        expires_at: u64,
+    ) -> Result<Self, CryptoError> {
+        let recipient = crate::crypto::agreement_public_of(&parse_address(device)?)?;
+        let issuer = identity.address();
+        let ctx = SealContext {
+            direction: "call",
+            issuer: &issuer,
+            device,
+            call_id,
+            issued_at,
+            expires_at,
+        };
+        let sealed = crate::crypto::seal(&ctx, &recipient, plaintext)?;
+        let mut envelope = Self {
+            call_id: call_id.to_owned(),
+            issuer,
+            device: device.to_owned(),
+            issued_at,
+            expires_at,
+            sealed,
+            sig: String::new(),
+        };
+        envelope.sig = identity.sign(&envelope.transcript()?);
+        Ok(envelope)
+    }
+
     /// Opens the sealed command with the same key that signs for this device.
     pub fn open(&self, identity: &Identity) -> Result<SealedCall, VerifyError> {
         let ctx = SealContext {
@@ -148,6 +183,20 @@ impl ResultEnvelope {
         Ok(envelope)
     }
 
+    /// Caller side: open the sealed answer. The result inherits the call's
+    /// expiry, so the caller must hold on to the envelope it sent.
+    pub fn open(&self, identity: &Identity, call: &CallEnvelope) -> Result<Vec<u8>, CryptoError> {
+        let ctx = SealContext {
+            direction: "result",
+            issuer: &call.issuer,
+            device: &call.device,
+            call_id: &call.call_id,
+            issued_at: self.issued_at,
+            expires_at: call.expires_at,
+        };
+        crate::crypto::open(&ctx, identity, &self.sealed)
+    }
+
     pub fn verify(&self, device: &str) -> Result<(), VerifyError> {
         let device_key = parse_address(device).map_err(|_| VerifyError::Malformed)?;
         if self.device != device {
@@ -177,6 +226,24 @@ pub fn seal_blob(
         expires_at: call.expires_at,
     };
     crate::crypto::seal_bytes(&ctx, &recipient, plaintext)
+}
+
+/// Caller side: an answer too big for the row arrived as an attachment.
+pub fn open_blob(
+    call: &CallEnvelope,
+    identity: &Identity,
+    result_issued_at: u64,
+    sealed: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let ctx = SealContext {
+        direction: "blob",
+        issuer: &call.issuer,
+        device: &call.device,
+        call_id: &call.call_id,
+        issued_at: result_issued_at,
+        expires_at: call.expires_at,
+    };
+    crate::crypto::open_bytes(&ctx, identity, sealed)
 }
 
 /// A device request authenticates itself: method, path, address, time.
@@ -216,6 +283,10 @@ pub fn request_headers(identity: &Identity, method: &str, path: &str) -> Vec<(St
     let auth = new_request_auth(identity, method, path);
     let signature = identity.sign(&auth.transcript());
     vec![
+        // `/v1/*` reads the address from the path and `/api/*` from this header;
+        // both are covered by the same signature, so neither can speak for an
+        // address it cannot sign for.
+        ("x-exe-address".into(), auth.address.clone()),
         ("x-exe-timestamp".into(), auth.timestamp.to_string()),
         ("x-exe-signature".into(), signature),
     ]

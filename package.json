@@ -1,7 +1,7 @@
 {
   "name": "exe",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "packageManager": "pnpm@11.22.0",
   "dependencies": {
@@ -25,6 +25,7 @@
     "vectors": "node --experimental-strip-types scripts/vectors.ts",
     "test:integration": "node --experimental-strip-types scripts/integration.mjs",
     "test:client": "cargo build --manifest-path clients/Cargo.toml && node --experimental-strip-types scripts/client-smoke.mjs",
+    "test:mcp": "cargo build --manifest-path clients/Cargo.toml && node --experimental-strip-types scripts/mcp-smoke.mjs",
     "db:init": "wrangler d1 execute exe --file worker/src/schema.sql --remote",
     "db:init:local": "wrangler d1 execute exe --file worker/src/schema.sql --local",
     "version:sync": "node scripts/version.mjs",
