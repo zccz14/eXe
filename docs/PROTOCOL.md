@@ -41,7 +41,7 @@ cloud   = "https://exe.ntnl.io"
 ```
 
 - 设备启动时用自己的密钥向云端自登记（挑战-响应签名），云端只记地址与在线状态。
-- 设备每次请求都带自己的签名（时间窗 + 一次性 nonce 防重放），**没有 bearer 令牌**。
+- 设备每次请求都带自己的签名（时间窗 + 一次性 `base64url` 随机数防重放），**没有 bearer 令牌**。
 - 没有配对码、没有 SAS、没有批准签名：信任的建立就是改配置 + 重启。
 
 云端既参与不了信任建立，也改变不了它。
@@ -57,7 +57,7 @@ aad         = 方向 ‖ issuer ‖ device ‖ call_id ‖ issued_at ‖ expires
 body        = AES-256-GCM(content_key, iv, aad, plaintext)
 wrapped     = crypto_box(content_key, nonce24, recipient_x25519_pub)
             = eph_pub32 ‖ XSalsa20-Poly1305(HSalsa20(X25519(eph_sk, recipient)), nonce24, content_key)
-sealed      = nonce24 ‖ eph_pub32 ‖ wrapped ‖ iv12 ‖ body
+sealed      = base64url( nonce24 ‖ eph_pub32 ‖ wrapped ‖ iv12 ‖ body )
 传输时整块编码成 base64url：sealed_b64
 ```
 
@@ -75,7 +75,8 @@ result = { "call_id": "...", "device": "<base58>", "ok": true, "issued_at": 0,
            "sealed": "<base64url>", "sig": "<base58>" }
 ```
 
-- `sig` 是签发者对该条报文的 Ed25519 签名，覆盖除 `sig` 外的全部字段（含 `sealed`）。
+- `sig` 是签发者对该条报文的 Ed25519 签名，覆盖除 `sig` 外的全部字段（含 `sealed` 的原始字节，
+  不是它的编码文本）。
 - 指令的 `sealed` 用**设备**的 X25519 公钥封；结果的 `sealed` 用**签发者**的 X25519 公钥封。
 - `ok` 在签名范围内：云端解不开正文，成败由设备签出来。
 
