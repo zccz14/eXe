@@ -1,6 +1,6 @@
 # eXe iOS shell
 
-`ExeAgent.swift` + `exe_mobile.h` wrap the same Rust core the desktop binary uses.
+`ExeClient.swift` + `exe_mobile.h` wrap the same Rust core the desktop binary uses.
 Build the static library and add these files to an Xcode app target:
 
 ```sh

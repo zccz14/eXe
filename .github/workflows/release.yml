@@ -56,7 +56,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: agent
+          workspaces: clients
       - name: Cross toolchain
         if: matrix.apt
         run: |
@@ -65,26 +65,26 @@ jobs:
       - name: Build
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
-        run: cargo build --manifest-path agent/Cargo.toml -p exe --release --target ${{ matrix.target }}
+        run: cargo build --manifest-path clients/Cargo.toml -p exe --release --target ${{ matrix.target }}
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
         run: |
-          cd agent/target/${{ matrix.target }}/release
+          cd clients/target/${{ matrix.target }}/release
           tar czf exe-${{ matrix.target }}.tar.gz exe
           shasum -a 256 exe-${{ matrix.target }}.tar.gz > exe-${{ matrix.target }}.tar.gz.sha256
       - name: Package (windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          cd agent/target/${{ matrix.target }}/release
+          cd clients/target/${{ matrix.target }}/release
           Compress-Archive -Path exe.exe -DestinationPath exe-${{ matrix.target }}.zip
           (Get-FileHash exe-${{ matrix.target }}.zip -Algorithm SHA256).Hash.ToLower() + "  exe-${{ matrix.target }}.zip" | Out-File exe-${{ matrix.target }}.zip.sha256 -Encoding ascii
       - uses: actions/upload-artifact@v4
         with:
           name: exe-${{ matrix.target }}
           path: |
-            agent/target/${{ matrix.target }}/release/exe-${{ matrix.target }}.t*
-            agent/target/${{ matrix.target }}/release/exe-${{ matrix.target }}.z*
+            clients/target/${{ matrix.target }}/release/exe-${{ matrix.target }}.t*
+            clients/target/${{ matrix.target }}/release/exe-${{ matrix.target }}.z*
 
   mobile:
     name: mobile libraries (${{ matrix.target }})
@@ -106,26 +106,26 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: agent
+          workspaces: clients
       - uses: nttld/setup-ndk@v1
         if: matrix.ndk
         with:
           ndk-version: r27c
       - name: Install cargo-ndk
         if: matrix.ndk
-        working-directory: agent
+        working-directory: clients
         run: cargo install cargo-ndk --version 4.1.2 --locked
       - if: matrix.ndk
-        working-directory: agent
+        working-directory: clients
         run: cargo ndk -t arm64-v8a build -p exe-mobile --release
       - if: ${{ !matrix.ndk }}
-        run: cargo build --manifest-path agent/Cargo.toml -p exe-mobile --release --target ${{ matrix.target }}
+        run: cargo build --manifest-path clients/Cargo.toml -p exe-mobile --release --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: mobile-${{ matrix.target }}
           path: |
-            agent/target/${{ matrix.target }}/release/libexe_mobile.a
-            agent/target/${{ matrix.target }}/release/libexe_mobile.so
+            clients/target/${{ matrix.target }}/release/libexe_mobile.a
+            clients/target/${{ matrix.target }}/release/libexe_mobile.so
           if-no-files-found: ignore
 
   publish:

@@ -24,7 +24,7 @@
     "check": "pnpm typecheck && pnpm test",
     "vectors": "node --experimental-strip-types scripts/vectors.ts",
     "test:integration": "node --experimental-strip-types scripts/integration.mjs",
-    "test:agent": "cargo build --manifest-path agent/Cargo.toml && node --experimental-strip-types scripts/agent-smoke.mjs",
+    "test:client": "cargo build --manifest-path clients/Cargo.toml && node --experimental-strip-types scripts/client-smoke.mjs",
     "db:init": "wrangler d1 execute exe --file worker/src/schema.sql --remote",
     "db:init:local": "wrangler d1 execute exe --file worker/src/schema.sql --local",
     "version:sync": "node scripts/version.mjs",

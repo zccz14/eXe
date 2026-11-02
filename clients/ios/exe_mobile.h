@@ -5,18 +5,18 @@
 extern "C" {
 #endif
 
-/// Returns the agent version; free with exe_agent_free.
-char *exe_agent_version(void);
+/// Returns the client version; free with exe_client_free.
+char *exe_client_version(void);
 
 /// Returns this device's address (base58 Ed25519 public key); free with
-/// exe_agent_free. The shell shows it so a human can add the device in the
+/// exe_client_free. The shell shows it so a human can add the device in the
 /// console. There is no pairing code.
-char *exe_agent_address(const char *config_dir);
+char *exe_client_address(const char *config_dir);
 
-void exe_agent_free(char *value);
+void exe_client_free(char *value);
 
 /// Blocks forever serving calls. Writes the address to <config_dir>/address.txt.
-int exe_agent_run(const char *config_dir, const char *cloud);
+int exe_client_run(const char *config_dir, const char *cloud);
 
 #ifdef __cplusplus
 }

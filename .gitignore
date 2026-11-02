@@ -5,5 +5,4 @@ dist/
 *.tsbuildinfo
 .worktrees/
 target/
-agent/target/
 .DS_Store

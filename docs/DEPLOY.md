@@ -55,7 +55,7 @@ wrangler pages deploy console/dist --project-name=exe-console --branch=main
 ## 版本
 
 **整个产品只有一个版本号**：根 `package.json` 的 `version`。控制台 `console/package.json`、
-Rust workspace（`agent/Cargo.toml` 与 `Cargo.lock`）、tag、Worker `/api/health` 全部由它派生，
+Rust workspace（`clients/Cargo.toml` 与 `Cargo.lock`）、tag、Worker `/api/health` 全部由它派生，
 不允许任何组件单独前进。
 
 ```sh
@@ -108,19 +108,19 @@ pnpm db:init:local                     # 本地 D1 建表
 
 ```sh
 pnpm test:integration   # 纯 HTTP 协议链路
-pnpm test:agent         # 真正编译并运行 Rust 二进制
+pnpm test:client         # 真正编译并运行 Rust 二进制
 ```
 
 ## 设备端产物
 
 ```sh
-cargo build --manifest-path agent/Cargo.toml -p exe --release
+cargo build --manifest-path clients/Cargo.toml -p exe --release
 # 五平台产物由 .github/workflows/release.yml 交叉编译并发布到 Release
 ```
 
 Android 库：`cargo ndk -t arm64-v8a build -p exe-mobile --release`，
-产物 `libexe_mobile.so` 放到 `agent/android/app/src/main/jniLibs/arm64-v8a/`。
-iOS：见 `agent/ios/README.md`。
+产物 `libexe_mobile.so` 放到 `clients/android/app/src/main/jniLibs/arm64-v8a/`。
+iOS：见 `clients/ios/README.md`。
 
 ## 观测
 

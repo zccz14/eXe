@@ -62,9 +62,9 @@ function syncVersionField(rel, pattern, label, global = false) {
 }
 
 syncJson("console/package.json");
-syncVersionField("agent/Cargo.toml", /(\[workspace\.package\][\s\S]*?\nversion = ")([^"]+)(")/, "workspace.package.version");
+syncVersionField("clients/Cargo.toml", /(\[workspace\.package\][\s\S]*?\nversion = ")([^"]+)(")/, "workspace.package.version");
 syncVersionField(
-  "agent/Cargo.lock",
+  "clients/Cargo.lock",
   /(\[\[package\]\]\nname = "(?:exe|exe-core|exe-mobile)"\nversion = ")([^"]+)(")/,
   "workspace crate versions",
   true,

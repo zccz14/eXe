@@ -13,7 +13,7 @@ import { addressOf, decodeSecret } from "../shared/protocol.ts";
 const PORT = 8787;
 const base = `http://127.0.0.1:${PORT}`;
 const configDir = mkdtempSync(join(tmpdir(), "exe-smoke-"));
-const agentEnv = () => ({ ...process.env, EXE_CONFIG_DIR: configDir, EXE_CLOUD: base, EXE_HOSTNAME: "smoke-host", RUST_LOG: "info" });
+const clientEnv = () => ({ ...process.env, EXE_CONFIG_DIR: configDir, EXE_CLOUD: base, EXE_HOSTNAME: "smoke-host", RUST_LOG: "info" });
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -31,10 +31,10 @@ async function main() {
   dev.stdout.on("data", (chunk) => (devLog += chunk));
   dev.stderr.on("data", (chunk) => (devLog += chunk));
 
-  let agent;
-  let agentLog = "";
+  let client;
+  let clientLog = "";
   const cleanup = () => {
-    agent?.kill("SIGKILL");
+    client?.kill("SIGKILL");
     try {
       process.kill(-dev.pid, "SIGKILL");
     } catch {
@@ -53,7 +53,7 @@ async function main() {
     }
 
     // The device makes its own key; the human reads the address off the device.
-    const init = spawnSync("./agent/target/debug/exe", ["init"], { env: agentEnv(), encoding: "utf8" });
+    const init = spawnSync("./clients/target/debug/exe", ["init"], { env: clientEnv(), encoding: "utf8" });
     assert.equal(init.status, 0, init.stderr);
     const secret = /^secret\s*=\s*"([^"]+)"/m.exec(readFileSync(join(configDir, "config.toml"), "utf8"))?.[1];
     assert.ok(secret, "exe init wrote a secret");
@@ -63,16 +63,16 @@ async function main() {
     // The console types that address into its own browser-side book and hands its
     // own address back to the device: trust is built in two places, both local.
     const browser = makeBrowser();
-    const trust = spawnSync("./agent/target/debug/exe", ["trust", browser.address], { env: agentEnv(), encoding: "utf8" });
+    const trust = spawnSync("./clients/target/debug/exe", ["trust", browser.address], { env: clientEnv(), encoding: "utf8" });
     assert.equal(trust.status, 0, trust.stderr);
 
-    agent = spawn("./agent/target/debug/exe", ["run"], { env: agentEnv(), stdio: ["ignore", "pipe", "pipe"] });
-    agent.stdout.on("data", (chunk) => (agentLog += chunk));
-    agent.stderr.on("data", (chunk) => (agentLog += chunk));
+    client = spawn("./clients/target/debug/exe", ["run"], { env: clientEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    client.stdout.on("data", (chunk) => (clientLog += chunk));
+    client.stderr.on("data", (chunk) => (clientLog += chunk));
 
-    for (let attempt = 0; attempt < 120 && !agentLog.includes("subscribed"); attempt += 1) await wait(250);
-    assert.ok(agentLog.includes("subscribed"), `the agent subscribed to the stream\n${agentLog}`);
-    assert.ok(agentLog.includes(deviceAddress), "the agent logs its own address");
+    for (let attempt = 0; attempt < 120 && !clientLog.includes("subscribed"); attempt += 1) await wait(250);
+    assert.ok(clientLog.includes("subscribed"), `the client subscribed to the stream\n${clientLog}`);
+    assert.ok(clientLog.includes(deviceAddress), "the client logs its own address");
 
     const seen = () => browser.request(base, "GET", `/api/devices/${deviceAddress}`);
     for (let attempt = 0; attempt < 40 && !(await seen()).online; attempt += 1) await wait(250);
@@ -108,16 +108,16 @@ async function main() {
     assert.equal(cwdResult.opened.ok, true);
     assert.ok(cwdResult.opened.output.stdout.trim().length > 0, "cwd is honoured");
 
-    // The retired demo verbs are gone from the agent, not just from the console.
+    // The retired demo verbs are gone from the client, not just from the console.
     const retired = await browser.call(base, deviceAddress, "sysinfo", {});
     const retiredResult = await settle(retired.call.call_id);
     assert.equal(retiredResult.opened.ok, false);
     assert.equal(retiredResult.opened.code, "unknown_tool");
     assert.equal(retiredResult.call.status, "failed", "an unknown verb is a signed failure, not silence");
-    console.log("agent smoke: ok");
+    console.log("client smoke: ok");
   } catch (error) {
     console.error("FAILED:", error instanceof Error ? error.message : error);
-    console.error(agentLog.slice(-2000));
+    console.error(clientLog.slice(-2000));
     console.error(devLog.slice(-1500));
     cleanup();
     process.exit(1);

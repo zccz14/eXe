@@ -24,9 +24,9 @@ public struct ExeContentView: View {
         }
         .padding(24)
         .onAppear {
-            address = ExeAgent.shared.address()
-            ExeAgent.shared.start()
+            address = ExeClient.shared.address()
+            ExeClient.shared.start()
         }
-        .onReceive(timer) { _ in address = ExeAgent.shared.address() }
+        .onReceive(timer) { _ in address = ExeClient.shared.address() }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "exe"
-description = "eXe desktop agent (Windows, Linux, macOS)"
+description = "eXe desktop client (Windows, Linux, macOS)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

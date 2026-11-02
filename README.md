@@ -15,10 +15,10 @@
 |---|---|---|
 | `worker/` | CF Worker：设备自登记、SSE 投递、结果收取、控制台 API | TypeScript（Workers native）+ D1 |
 | `console/` | 控制台 GUI（Pages），无登录 | React + Vite + shadcn |
-| `agent/crates/exe-core` | 协议 / 密码学（无平台假设） | Rust |
-| `agent/crates/exe-cli` | **Windows / Linux / macOS** 桌面 binary | Rust |
-| `agent/android/` | Android app（JNI 复用 exe-core） | Rust + Kotlin |
-| `agent/ios/` | iOS app（staticlib 复用 exe-core） | Rust + SwiftUI |
+| `clients/crates/exe-core` | 协议 / 密码学（无平台假设） | Rust |
+| `clients/crates/exe-cli` | **Windows / Linux / macOS** 桌面 binary | Rust |
+| `clients/android/` | Android app（JNI 复用 exe-core） | Rust + Kotlin |
+| `clients/ios/` | iOS app（staticlib 复用 exe-core） | Rust + SwiftUI |
 
 ## 快速开始
 
