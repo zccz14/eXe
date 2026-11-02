@@ -122,7 +122,7 @@ export function DevicesPage() {
           {t("add_title")}
         </div>
         <p className="text-sm text-muted-foreground">{t("add_body")}</p>
-        <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs">exe run</pre>
+        <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs">{"curl -fsSL https://exe.ntnl.io/install.sh | sh && exe"}</pre>
         <div className="flex flex-col gap-2 sm:flex-row">
           <Input
             value={address}

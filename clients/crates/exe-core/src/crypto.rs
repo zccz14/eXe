@@ -313,7 +313,16 @@ pub fn seal_bytes_with(
 }
 
 pub fn open(ctx: &SealContext, identity: &Identity, sealed: &str) -> Result<Vec<u8>, CryptoError> {
-    let raw = unb64u(sealed)?;
+    open_bytes(ctx, identity, &unb64u(sealed)?)
+}
+
+/// The same seal, from the bytes an object store hands back: an attached result
+/// never had the base64url wrapper, so it cannot be opened as a string.
+pub fn open_bytes(
+    ctx: &SealContext,
+    identity: &Identity,
+    raw: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
     if raw.len() < SEALED_PREFIX + 16 {
         return Err(CryptoError::Open);
     }

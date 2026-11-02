@@ -1,11 +1,11 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use anyhow::{bail, Context, Result};
 use exe_core::protocol::{request_headers, seal_blob, Event, ResultEnvelope};
 use exe_core::{unix_now, CallEnvelope, Identity};
 use futures_util::StreamExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
@@ -98,7 +98,8 @@ struct Client {
     client: reqwest::Client,
     cloud: String,
     identity: Identity,
-    trust: Vec<String>,
+    /// Reloaded on SIGHUP so a new caller needs no restart.
+    trust: Arc<RwLock<Vec<String>>>,
     /// This process, not this device: a restart changes it. The relay uses it to
     /// tell "the process that took your call is gone" from "it is still working",
     /// and to refuse to re-deliver a call whose side effects may already exist.
@@ -108,6 +109,10 @@ struct Client {
 }
 
 pub async fn run(config: Config) -> Result<()> {
+    // A service has no terminal: the previous generation of the log is kept, and
+    // a second process on this address is refused before it can run anything twice.
+    crate::logs::rotate();
+    let _lock = crate::lock::acquire()?;
     let identity = config.identity()?;
     let bad_trust = config.check_trust();
     if !bad_trust.is_empty() {
@@ -131,6 +136,35 @@ pub async fn run(config: Config) -> Result<()> {
     let tasks: Tasks = Arc::default();
     let results: Arc<Mutex<ResultCache>> = Arc::default();
 
+    let trust: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(config.trust.clone()));
+    // Adding a caller edits the file; the device re-reads it, re-registers, and
+    // reconnects. Restarting by hand was the step people skipped.
+    let reload = Arc::new(Notify::new());
+    #[cfg(unix)]
+    {
+        let trust = trust.clone();
+        let notify = reload.clone();
+        tokio::spawn(async move {
+            let Ok(mut hangup) =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+            else {
+                return;
+            };
+            while hangup.recv().await.is_some() {
+                match config::load() {
+                    Ok(fresh) => {
+                        let count = fresh.trust.len();
+                        if let Ok(mut current) = trust.write() {
+                            *current = fresh.trust.clone();
+                        }
+                        info!(callers = count, "trust reloaded; re-registering");
+                        notify.notify_one();
+                    }
+                    Err(error) => warn!(%error, "could not reload the configuration"),
+                }
+            }
+        });
+    }
     let mut backoff = 1u64;
     // `None` means "pick an endpoint again": at startup, and after anything that
     // looks like the route rather than the request being the problem.
@@ -152,7 +186,7 @@ pub async fn run(config: Config) -> Result<()> {
             client: http.clone(),
             cloud,
             identity: identity.clone(),
-            trust: config.trust.clone(),
+            trust: trust.clone(),
             run_id: run_id.clone(),
             tasks: tasks.clone(),
             results: results.clone(),
@@ -162,7 +196,7 @@ pub async fn run(config: Config) -> Result<()> {
             current = None;
             backoff = (backoff * 2).min(30);
         } else {
-            match client.listen().await {
+            match client.listen(&reload).await {
                 // The relay closes a stream on purpose after fifteen minutes;
                 // that is a normal cycle, not a reason to change endpoints.
                 Ok(()) => backoff = 1,
@@ -237,7 +271,7 @@ impl Client {
                     // The relay gets a copy of who this device trusts so it can
                     // drop calls the device would refuse anyway. The copy can only
                     // make it send less; this process still checks every call.
-                    "trust": self.trust.join(","),
+                    "trust": self.trust.read().map(|list| list.join(",")).unwrap_or_default(),
                     "run_id": self.run_id.as_str(),
                 })),
             &self.identity,
@@ -252,7 +286,7 @@ impl Client {
         Ok(())
     }
 
-    async fn listen(&self) -> Result<()> {
+    async fn listen(&self, reload: &Notify) -> Result<()> {
         let path = format!("/v1/devices/{}/stream", self.identity.address());
         let request = signed(
             self.client.get(format!("{}{path}", self.cloud)),
@@ -271,19 +305,26 @@ impl Client {
 
         let mut stream = response.bytes_stream();
         let mut buffer: Vec<u8> = Vec::with_capacity(8192);
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.context("event stream failed")?;
-            buffer.extend_from_slice(&chunk);
-            while let Some(position) = find_frame_end(&buffer) {
-                let frame: Vec<u8> = buffer.drain(..position + 2).collect();
-                if let Some((event, data)) = parse_frame(&frame[..position]) {
-                    if let Some(event) = Event::parse(&event, &data) {
-                        self.handle(event).await;
+        loop {
+            tokio::select! {
+                // Dropping the stream and coming back through the loop is the
+                // cheapest way to re-register with a fresh trust list.
+                _ = reload.notified() => return Ok(()),
+                chunk = stream.next() => {
+                    let Some(chunk) = chunk else { return Ok(()) };
+                    let chunk = chunk.context("event stream failed")?;
+                    buffer.extend_from_slice(&chunk);
+                    while let Some(position) = find_frame_end(&buffer) {
+                        let frame: Vec<u8> = buffer.drain(..position + 2).collect();
+                        if let Some((event, data)) = parse_frame(&frame[..position]) {
+                            if let Some(event) = Event::parse(&event, &data) {
+                                self.handle(event).await;
+                            }
+                        }
                     }
                 }
             }
         }
-        Ok(())
     }
 
     async fn handle(&self, event: Event) {
@@ -300,7 +341,12 @@ impl Client {
                 }
             }
             Event::Call(call) => {
-                if let Err(error) = call.verify(&self.trust, &self.identity.address(), unix_now()) {
+                let trust = self
+                    .trust
+                    .read()
+                    .map(|list| list.clone())
+                    .unwrap_or_default();
+                if let Err(error) = call.verify(&trust, &self.identity.address(), unix_now()) {
                     warn!(call = call.call_id.as_str(), %error, "rejected a call that failed verification");
                     return;
                 }
@@ -422,7 +468,7 @@ impl Client {
             tool = sealed.name.as_str(),
             "executing"
         );
-        let full = crate::exec::execute(&sealed.name, &sealed.args).await;
+        let full = crate::exec::execute(&sealed.name, &sealed.args, call.expires_at).await;
         let ok = serde_json::from_str::<serde_json::Value>(&full)
             .ok()
             .and_then(|value| value.get("ok").and_then(serde_json::Value::as_bool))
