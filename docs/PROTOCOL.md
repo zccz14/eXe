@@ -114,7 +114,7 @@ result = { "call_id": "...", "device": "<base58>", "ok": true, "issued_at": 0,
 设备收到一条调用时按顺序做四件事：
 
 ```
-验签（issuer 必须在 trust 里）→ 验时间窗 → 用本机密钥解封 → 查本地策略 → 执行
+验签（issuer 必须在 trust 里）→ 验时间窗 → 用本机密钥解封 → 执行
 ```
 
 任何一步不过就丢弃，不回执、不执行。
@@ -125,8 +125,8 @@ result = { "call_id": "...", "device": "<base58>", "ok": true, "issued_at": 0,
 call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
 ```
 
-看不到：工具名、参数、输出、结果正文。云端因此也做不了任何"内容相关"的策略——
-"能不能执行这件事"只由设备本地策略回答。
+看不到：工具名、参数、输出、结果正文。云端因此也做不了任何内容相关的判断——
+"能不能执行"只由设备上的 `trust` 列表回答。
 
 ## 6. 接口
 
@@ -158,17 +158,18 @@ call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
 
 云端只为**已添加**的地址排队；设备的自登记与它是否被某个账号添加无关。
 
-## 7. 本地策略
+## 7. 执行限额
 
-```toml
-allow = ["echo", "sysinfo"]       # 默认只允许无害工具
-deny  = ["bash"]                  # 显式禁止优先
-max_runtime_seconds = 60
-max_output_bytes = 262144
-workdir = "~"
-```
+没有本地许可这一层：签名来自 `trust` 里的地址，设备就执行。剩下的只有执行卫生，
+固定常量、不可配置：
 
-签名合法不等于允许执行：策略拒绝时设备回传 `ok: false, code: "policy_denied"`。
+| 项 | 值 | 说明 |
+|---|---|---|
+| 单次运行上限 | 60 s | 超时杀进程，回 `ok: false, code: "timeout"` |
+| 输出截断 | 256 KiB | stdout / stderr 各自截断 |
+
+`bash` 以设备用户的身份运行，没有沙箱、没有二次确认。这就是「信任即授权」的代价：
+信任错一个地址，等于把整台机器交出去。
 
 ## 8. 两种语言，一套向量
 

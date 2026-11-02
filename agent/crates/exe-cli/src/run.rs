@@ -2,7 +2,6 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use exe_core::policy::Policy;
 use exe_core::protocol::{request_headers, Event, ResultEnvelope};
 use exe_core::{unix_now, CallEnvelope, Identity};
 use futures_util::StreamExt;
@@ -47,14 +46,12 @@ struct Agent {
     cloud: String,
     identity: Identity,
     trust: Vec<String>,
-    policy: Policy,
     tasks: Tasks,
     results: Arc<Mutex<ResultCache>>,
 }
 
 pub async fn run(config: Config) -> Result<()> {
     let identity = config.identity()?;
-    let policy = Policy::parse(&std::fs::read_to_string(config::ensure_policy()?)?)?;
     let bad_trust = config.check_trust();
     if !bad_trust.is_empty() {
         bail!("trust contains entries that are not eXe addresses: {bad_trust:?}");
@@ -66,7 +63,6 @@ pub async fn run(config: Config) -> Result<()> {
         address = identity.address().as_str(),
         cloud = config.cloud.as_str(),
         trust = ?config.trust,
-        allow = ?policy.allow,
         "eXe agent starting"
     );
 
@@ -77,7 +73,6 @@ pub async fn run(config: Config) -> Result<()> {
         cloud: config.cloud.clone(),
         identity,
         trust: config.trust.clone(),
-        policy,
         tasks: Arc::default(),
         results: Arc::default(),
     };
@@ -275,7 +270,7 @@ impl Agent {
             tool = sealed.name.as_str(),
             "executing"
         );
-        let plaintext = crate::exec::execute(&self.policy, &sealed.name, &sealed.args).await;
+        let plaintext = crate::exec::execute(&sealed.name, &sealed.args).await;
         let ok = serde_json::from_str::<serde_json::Value>(&plaintext)
             .ok()
             .and_then(|value| value.get("ok").and_then(serde_json::Value::as_bool))

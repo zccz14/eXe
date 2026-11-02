@@ -236,12 +236,6 @@ pub fn address_of_public(public: &[u8; 32]) -> String {
     b58(public)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PolicyDecision {
-    Allow,
-    Deny(String),
-}
-
 #[derive(Debug, Clone)]
 pub enum Event {
     Hello,

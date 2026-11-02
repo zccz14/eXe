@@ -58,10 +58,6 @@ pub unsafe extern "C" fn exe_agent_free(value: *mut c_char) {
 
 pub(crate) fn run_inner(dir: PathBuf, cloud: String) -> i32 {
     std::env::set_var("EXE_CONFIG_DIR", &dir);
-    if let Err(error) = config::ensure_policy() {
-        tracing::error!(%error, "could not write the default policy");
-        return 3;
-    }
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -105,7 +101,7 @@ pub(crate) fn run_inner(dir: PathBuf, cloud: String) -> i32 {
     })
 }
 
-/// Blocks forever serving calls. `config_dir` holds config.toml, policy.toml and
+/// Blocks forever serving calls. `config_dir` holds config.toml and
 /// an `address.txt` the shell reads to show this device's address.
 ///
 /// # Safety

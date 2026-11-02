@@ -211,9 +211,9 @@ test("a result built after the fact cannot be swapped between calls", () => {
     sealed: vectors.call.sealed,
     sig: vectors.call.sig,
   };
-  const result = buildResult({ seed: device.seed, call, ok: false, plaintext: '{"ok":false,"code":"policy_denied"}', issuedAt: 1_700_000_010 });
+  const result = buildResult({ seed: device.seed, call, ok: false, plaintext: '{"ok":false,"code":"spawn_failed"}', issuedAt: 1_700_000_010 });
   assert.equal(verifyResult(result), true);
-  assert.equal(openResult({ seed: issuer.seed, call, result }), '{"ok":false,"code":"policy_denied"}');
+  assert.equal(openResult({ seed: issuer.seed, call, result }), '{"ok":false,"code":"spawn_failed"}');
   const other = { ...call, call_id: "22222222-2222-4222-8222-222222222222", expires_at: call.expires_at + 60 };
   assert.throws(() => openResult({ seed: issuer.seed, call: other, result }), "aAD binds the result to the call");
 });
