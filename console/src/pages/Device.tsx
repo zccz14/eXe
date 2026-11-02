@@ -2,14 +2,23 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeftIcon, PlayIcon, ShieldAlertIcon, SquareIcon, Trash2Icon } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, type CallDetail, type CallView, type DeviceStatus } from "../api";
+import { api, apiBytes, type CallDetail, type CallView, type DeviceStatus } from "../api";
 import { bookList, bookRemove } from "../book";
-import { localCalls, newCallId, openSealed, sealDeviceCall } from "../keystore";
+import { localCalls, newCallId, openAttachment, openSealed, sealDeviceCall } from "../keystore";
 import { statusCopy, useCopy } from "../i18n";
 import { Badge, Button, Card, Input, Stat } from "../ui";
 
 /** The device has exactly one verb; the name is still a field because the wire carries it. */
 const DEFAULT_TOOL = "shell";
+
+/** The size of the attachment a result points at, or null when it is inline. */
+function attachmentBytes(value: unknown): number | null {
+  if (typeof value !== "object" || value === null) return null;
+  const blob = (value as { blob?: unknown }).blob;
+  if (typeof blob !== "object" || blob === null) return null;
+  const bytes = (blob as { bytes?: unknown }).bytes;
+  return typeof bytes === "number" ? bytes : null;
+}
 
 function statusTone(status: CallView["status"]): "muted" | "ok" | "warn" | "bad" {
   if (status === "succeeded") return "ok";
@@ -48,6 +57,7 @@ export function DevicePage() {
   });
 
   const [plaintext, setPlaintext] = useState<unknown>(null);
+  const [attachment, setAttachment] = useState<unknown>(null);
   const [local, setLocal] = useState<Record<string, { name: string; args: string }>>({});
   const detail = useQuery({
     queryKey: ["call", openCall],
@@ -62,6 +72,7 @@ export function DevicePage() {
 
   useEffect(() => {
     setPlaintext(null);
+    setAttachment(null);
     if (!detail.data?.result) return;
     let cancelled = false;
     openSealed({ call: detail.data.call, result: detail.data.result })
@@ -75,6 +86,17 @@ export function DevicePage() {
       cancelled = true;
     };
   }, [detail.data]);
+
+  // A result too big for one row arrives as a reference; the bytes are fetched
+  // separately and opened with the same key that opens inline results.
+  const loadAttachment = useMutation({
+    mutationFn: async () => {
+      if (!openCall || !detail.data?.result) throw new Error(t("attachment_failed"));
+      const bytes = await apiBytes(`/api/calls/${openCall}/blob`);
+      return openAttachment(detail.data.call, detail.data.result, bytes);
+    },
+    onSuccess: (value) => setAttachment(value),
+  });
 
   const send = useMutation({
     mutationFn: async () => {
@@ -225,6 +247,18 @@ export function DevicePage() {
                   <div className="font-mono break-all">{local[call.call_id]?.args ?? "—"}</div>
                   {detail.isLoading && <div className="text-muted-foreground">…</div>}
                   {plaintext !== null && <pre className="overflow-x-auto font-mono text-xs">{JSON.stringify(plaintext, null, 2)}</pre>}
+                  {attachmentBytes(plaintext) !== null &&
+                    (attachment !== null ? (
+                      <pre className="overflow-x-auto font-mono text-xs">{JSON.stringify(attachment, null, 2)}</pre>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="text-muted-foreground">{t("attachment_hint")}</div>
+                        <Button variant="outline" onClick={() => loadAttachment.mutate()} disabled={loadAttachment.isPending}>
+                          {t("attachment_load")}
+                        </Button>
+                        {loadAttachment.error && <div className="text-destructive">{loadAttachment.error.message}</div>}
+                      </div>
+                    ))}
                 </div>
               )}
             </div>

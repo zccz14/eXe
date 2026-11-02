@@ -185,7 +185,7 @@ export function agreementSecret(seed: Uint8Array): Uint8Array {
 
 // --- two-layer seal ----------------------------------------------------------
 
-export type Direction = "call" | "result";
+export type Direction = "call" | "result" | "blob";
 
 export interface SealContext {
   direction: Direction;
@@ -305,16 +305,27 @@ export function seal(input: SealContext & {
 }
 
 export function open(input: SealContext & { recipientSecret: Uint8Array; sealed: string }): string {
-  const raw = unb64u(input.sealed);
+  return openParts(unb64u(input.sealed), input, input.recipientSecret);
+}
+
+/**
+ * The same open, for bytes that never went through base64url: an attachment
+ * travels as raw ciphertext in an object store, not as a field in a row.
+ */
+export function openBytes(input: SealContext & { recipientSecret: Uint8Array; sealed: Uint8Array }): string {
+  return openParts(input.sealed, input, input.recipientSecret);
+}
+
+function openParts(raw: Uint8Array, context: SealContext, recipientSecret: Uint8Array): string {
   if (raw.length < SEALED_PREFIX + 16) throw new Error("sealed payload is too short");
   const nonce = raw.slice(0, 24);
   const ephemeral = raw.slice(24, 56);
   const box = raw.slice(56, 104);
   const iv = raw.slice(104, 116);
   const body = raw.slice(116);
-  const shared = x25519.getSharedSecret(input.recipientSecret, ephemeral);
+  const shared = x25519.getSharedSecret(recipientSecret, ephemeral);
   const contentKey = xsalsa20poly1305(hsalsa20(shared, ZERO_16), nonce).decrypt(box);
-  return fromUtf8(gcm(contentKey, iv, associatedData(input)).decrypt(body));
+  return fromUtf8(gcm(contentKey, iv, associatedData(context)).decrypt(body));
 }
 
 export interface SealParts {
@@ -557,6 +568,29 @@ export function buildResult(input: {
   };
   result.sig = signResult(input.seed, result);
   return result;
+}
+
+/**
+ * Issuer side: open an attachment the device sealed for this call. Same two
+ * layers, same binding — only the direction differs, so a blob can never be
+ * mistaken for the envelope that points at it, nor for another call's blob.
+ */
+export function openAttachment(input: {
+  seed: Uint8Array;
+  call: Pick<CallEnvelope, "call_id" | "issuer" | "device" | "expires_at">;
+  result: Pick<ResultEnvelope, "issued_at">;
+  sealed: Uint8Array;
+}): string {
+  return openBytes({
+    direction: "blob",
+    issuer: input.call.issuer,
+    device: input.call.device,
+    callId: input.call.call_id,
+    issuedAt: input.result.issued_at,
+    expiresAt: input.call.expires_at,
+    recipientSecret: agreementSecret(input.seed),
+    sealed: input.sealed,
+  });
 }
 
 /** Issuer side: open the sealed answer, which only its own key can unwrap. */

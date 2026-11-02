@@ -59,6 +59,8 @@ export interface CallView {
   received_at: number | null;
   settled_at: number | null;
   has_result: boolean;
+  /** Size of the attachment when the result was too big for the row. */
+  blob_bytes: number | null;
 }
 
 function callView(row: CallRow): CallView {
@@ -72,7 +74,27 @@ function callView(row: CallRow): CallView {
     received_at: row.received_at,
     settled_at: row.settled_at,
     has_result: row.result !== null,
+    blob_bytes: row.blob_bytes,
   };
+}
+
+/**
+ * The attachment verbatim, still sealed. Only the console that signed the call
+ * may ask for it, and only the console's key can open it afterwards.
+ */
+export async function readBlob(env: Env, owner: string, callId: string): Promise<Response> {
+  const row = await callById(env, callId);
+  if (!row || row.issuer !== owner) throw new ApiError(404, "call not found");
+  if (row.blob_bytes === null) throw new ApiError(404, "this call has no attachment");
+  const object = await env.BLOBS.get(callId);
+  if (!object) throw new ApiError(404, "the attachment is gone");
+  return new Response(object.body, {
+    headers: {
+      "content-type": "application/octet-stream",
+      "cache-control": "no-store",
+      "content-length": String(object.size),
+    },
+  });
 }
 
 /** The relay's answer to "who am I here?", which is only ever the address. */

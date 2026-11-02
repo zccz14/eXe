@@ -239,6 +239,41 @@ pub fn seal_with(
     plaintext: &[u8],
     randomness: &SealRandomness,
 ) -> Result<String, CryptoError> {
+    Ok(b64u(&seal_bytes_with(
+        ctx, recipient, plaintext, randomness,
+    )?))
+}
+
+/// The same seal, left as the bytes an object store wants: an attached result is
+/// not a field in a row, so it never needs the base64url wrapper.
+pub fn seal_bytes(
+    ctx: &SealContext,
+    recipient: &[u8; 32],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let nonce = random_bytes::<24>();
+    let content_key = random_bytes::<32>();
+    let iv = random_bytes::<12>();
+    let ephemeral = random_bytes::<32>();
+    seal_bytes_with(
+        ctx,
+        recipient,
+        plaintext,
+        &SealRandomness {
+            nonce: &nonce,
+            content_key: &content_key,
+            iv: &iv,
+            ephemeral_secret: &ephemeral,
+        },
+    )
+}
+
+pub fn seal_bytes_with(
+    ctx: &SealContext,
+    recipient: &[u8; 32],
+    plaintext: &[u8],
+    randomness: &SealRandomness,
+) -> Result<Vec<u8>, CryptoError> {
     if randomness.nonce.len() != 24
         || randomness.content_key.len() != 32
         || randomness.iv.len() != 12
@@ -274,7 +309,7 @@ pub fn seal_with(
     out.extend_from_slice(&wrapped);
     out.extend_from_slice(randomness.iv);
     out.extend_from_slice(&body);
-    Ok(b64u(&out))
+    Ok(out)
 }
 
 pub fn open(ctx: &SealContext, identity: &Identity, sealed: &str) -> Result<Vec<u8>, CryptoError> {

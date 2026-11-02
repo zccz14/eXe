@@ -86,4 +86,5 @@ DO 的 100 万请求额度，在「每天 100 次调用/台」下只够约 **300
 | `STREAM_MAX_SECONDS` | 900 s | 单连接寿命，决定重连频率 |
 | `RESEND_AFTER_SECONDS` | 120 s | 同一条连接里多久重发同一封 |
 | `sweep` / `touchDevice` 周期 | 30 s | 维护写频率，**当前真正的容量旋钮** |
-| `CALL_RETENTION_DAYS` | 7 天 | 保留期；每小时 cron 删一批已结案的调用（`RETENTION_BATCH` = 2000 行/次） |
+| `CALL_RETENTION_DAYS` | 7 天 | 保留期；每小时 cron 删一批已结案的调用（`RETENTION_BATCH` = 2000 行/次），附件跟着行一起删 |
+| `MAX_BLOB_BYTES` | 16 MB | 单个附件的密文上限；附件存在 R2，中继只记录字节数 |

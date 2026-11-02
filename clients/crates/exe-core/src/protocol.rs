@@ -158,6 +158,27 @@ impl ResultEnvelope {
     }
 }
 
+/// A result too big for one row travels as an attachment instead: the same seal,
+/// the same call binding, a different direction so a blob can never be mistaken
+/// for the envelope that names it.
+pub fn seal_blob(
+    call: &CallEnvelope,
+    plaintext: &[u8],
+    issued_at: u64,
+) -> Result<Vec<u8>, CryptoError> {
+    let recipient = parse_address(&call.issuer)?;
+    let recipient = crate::crypto::agreement_public_of(&recipient)?;
+    let ctx = SealContext {
+        direction: "blob",
+        issuer: &call.issuer,
+        device: &call.device,
+        call_id: &call.call_id,
+        issued_at,
+        expires_at: call.expires_at,
+    };
+    crate::crypto::seal_bytes(&ctx, &recipient, plaintext)
+}
+
 /// A device request authenticates itself: method, path, address, time.
 ///
 /// No nonce: replay defence lives in the `call_id` the sender signed, not in a

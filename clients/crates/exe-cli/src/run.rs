@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use exe_core::protocol::{request_headers, Event, ResultEnvelope};
+use exe_core::protocol::{request_headers, seal_blob, Event, ResultEnvelope};
 use exe_core::{unix_now, CallEnvelope, Identity};
 use futures_util::StreamExt;
 use tokio::sync::Mutex;
@@ -17,6 +17,30 @@ type Tasks = Arc<Mutex<HashMap<String, JoinHandle<()>>>>;
 /// `call_id` again. The envelope is remembered before it is uploaded, so a
 /// repeat is answered from memory instead of running the tool twice.
 const REMEMBERED_RESULTS: usize = 256;
+
+/// A result that fits here travels inside the row the relay stores it in. Past
+/// that the relay would have to refuse it (D1 caps a row at 2 MB), so the device
+/// uploads the sealed payload as an attachment and the row keeps only a reference
+/// — the same shape an object store gives a large file.
+const INLINE_RESULT_BYTES: usize = 1_400_000;
+
+/// What the row says instead of the bytes: the outcome plus a pointer. `blob`
+/// carries either the attachment's size or the reason there is none.
+fn summarise(full: &str, ok: bool, note: serde_json::Value) -> String {
+    let value: serde_json::Value = serde_json::from_str(full).unwrap_or(serde_json::Value::Null);
+    let output = value.get("output");
+    serde_json::json!({
+        "ok": ok,
+        "output": {
+            "tool": output.and_then(|value| value.get("tool")).cloned().unwrap_or(serde_json::json!("shell")),
+            "exit_code": output.and_then(|value| value.get("exit_code")).cloned().unwrap_or(serde_json::Value::Null),
+            "truncated": true,
+            "bytes": full.len(),
+        },
+        "blob": note,
+    })
+    .to_string()
+}
 
 #[derive(Default)]
 struct ResultCache {
@@ -221,6 +245,31 @@ impl Client {
         }
     }
 
+    /// Uploads the sealed outcome as an attachment. The relay stores opaque
+    /// bytes; the console is the only party that can open them.
+    async fn upload_blob(&self, call: &CallEnvelope, plaintext: &[u8]) -> Result<usize> {
+        let sealed = seal_blob(call, plaintext, unix_now())?;
+        let path = format!(
+            "/v1/devices/{}/calls/{}/blob",
+            self.identity.address(),
+            call.call_id
+        );
+        let request = signed(
+            self.client
+                .put(format!("{}{path}", self.cloud))
+                .header("content-type", "application/octet-stream")
+                .body(sealed.clone()),
+            &self.identity,
+            "PUT",
+            &path,
+        );
+        let response = request.send().await.context("could not reach the relay")?;
+        if !response.status().is_success() {
+            bail!("relay refused the attachment with {}", response.status());
+        }
+        Ok(sealed.len())
+    }
+
     async fn replay(&self, call: &CallEnvelope) {
         let Some(envelope) = self.results.lock().await.get(&call.call_id) else {
             return;
@@ -279,11 +328,28 @@ impl Client {
             tool = sealed.name.as_str(),
             "executing"
         );
-        let plaintext = crate::exec::execute(&sealed.name, &sealed.args).await;
-        let ok = serde_json::from_str::<serde_json::Value>(&plaintext)
+        let full = crate::exec::execute(&sealed.name, &sealed.args).await;
+        let ok = serde_json::from_str::<serde_json::Value>(&full)
             .ok()
             .and_then(|value| value.get("ok").and_then(serde_json::Value::as_bool))
             .unwrap_or(false);
+        // Too big for one row: seal it as an attachment, upload it, and let the
+        // row carry the pointer. A failed upload is still answered — truncated,
+        // and with the reason — because silence is worse than a short answer.
+        let plaintext = if full.len() > INLINE_RESULT_BYTES {
+            match self.upload_blob(&call, full.as_bytes()).await {
+                Ok(bytes) => {
+                    info!(call = call.call_id.as_str(), bytes, "result attached");
+                    summarise(&full, ok, serde_json::json!({ "bytes": bytes }))
+                }
+                Err(error) => {
+                    warn!(call = call.call_id.as_str(), %error, "could not attach the result; answering truncated");
+                    summarise(&full, ok, serde_json::json!({ "error": error.to_string() }))
+                }
+            }
+        } else {
+            full
+        };
         let envelope =
             match ResultEnvelope::build(&self.identity, &call, ok, &plaintext, unix_now()) {
                 Ok(envelope) => envelope,

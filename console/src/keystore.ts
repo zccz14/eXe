@@ -7,6 +7,7 @@ import {
   decodeSecret,
   encodeSecret,
   newIdentity,
+  openAttachment as openAttachmentBytes,
   openResult,
   type CallEnvelope,
   type Identity,
@@ -144,6 +145,16 @@ export async function openSealed(detail: {
 }): Promise<unknown> {
   const identity = await localIdentity();
   return JSON.parse(openResult({ seed: identity.seed, call: detail.call, result: detail.result }));
+}
+
+/** Opens an attachment the device uploaded for this call; only this key can. */
+export async function openAttachment(
+  call: { call_id: string; issuer: string; device: string; expires_at: number },
+  result: { issued_at: number },
+  sealed: Uint8Array,
+): Promise<unknown> {
+  const identity = await localIdentity();
+  return JSON.parse(openAttachmentBytes({ seed: identity.seed, call, result, sealed }));
 }
 
 export function newCallId(): string {

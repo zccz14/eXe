@@ -3,12 +3,12 @@ use serde_json::{json, Value};
 /// Execution hygiene, not permission: one call cannot run forever or return an
 /// unbounded amount of output. Fixed on purpose — the trust list is the only gate.
 const MAX_RUNTIME_SECONDS: u64 = 60;
-/// A result has to fit in one D1 row, and D1 caps a row at 2 MB. The sealed,
-/// base64url-encoded envelope is 1.33x its plaintext, so about 1.4 MB of output
-/// is the most that can round-trip inline. Both streams share that budget and
-/// stdout gets it first: the payload (a screenshot, a file) is what matters, an
-/// error message that arrives after it is not.
-const MAX_OUTPUT_BYTES: usize = 1_400_000;
+/// The hard ceiling on one command's output: a device is not allowed to buffer
+/// more than this, whatever the caller asks for. Results above the inline budget
+/// travel as an attachment (see `run.rs`), so this is no longer tied to the size
+/// of a database row. Both streams share the budget and stdout gets it first:
+/// the payload is what matters, an error message that arrives after it is not.
+const MAX_OUTPUT_BYTES: usize = 10_000_000;
 
 fn failure(code: &str, error: &str) -> String {
     json!({ "ok": false, "code": code, "error": error }).to_string()

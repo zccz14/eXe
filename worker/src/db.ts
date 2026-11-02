@@ -5,6 +5,8 @@ import { ApiError, now } from "./http.ts";
 
 export interface Env {
   DB: D1Database;
+  /** Attachments: sealed results too big for a row. Opaque bytes, never opened here. */
+  BLOBS: R2Bucket;
   ASSETS: Fetcher;
   /** Comma-separated origins allowed to call the console API from another origin. */
   CONSOLE_ORIGINS?: string;
@@ -50,6 +52,8 @@ export interface CallRow {
   received_at: number | null;
   settled_at: number | null;
   result: string | null;
+  /** Size of the attachment in `BLOBS`, when the result did not fit in this row. */
+  blob_bytes: number | null;
   cancel_requested_at: number | null;
   created_at: number;
 }
@@ -99,14 +103,24 @@ export async function abandonOrphans(env: Env, address: string, runId: string): 
  * a bill and a liability.
  */
 export async function deleteSettledCalls(env: Env, olderThan: number, limit: number): Promise<number> {
-  const result = await env.DB.prepare(
-    "DELETE FROM calls WHERE call_id IN (" +
-      "SELECT call_id FROM calls WHERE status IN ('succeeded','failed','cancelled','expired','lost') " +
-      "AND settled_at IS NOT NULL AND settled_at < ? ORDER BY settled_at LIMIT ?)",
+  const rows = await env.DB.prepare(
+    "SELECT call_id, blob_bytes FROM calls WHERE status IN ('succeeded','failed','cancelled','expired','lost') " +
+      "AND settled_at IS NOT NULL AND settled_at < ? ORDER BY settled_at LIMIT ?",
   )
     .bind(olderThan, limit)
+    .all<{ call_id: string; blob_bytes: number | null }>();
+  const ids = rows.results.map((row) => row.call_id);
+  if (ids.length === 0) return 0;
+  // Objects first: a row that outlives its attachment is recoverable (the next
+  // sweep removes it), a object that outlives its row is a permanent leak.
+  for (const row of rows.results) {
+    if (row.blob_bytes !== null) await env.BLOBS.delete(row.call_id);
+  }
+  const placeholders = ids.map(() => "?").join(",");
+  const deleted = await env.DB.prepare(`DELETE FROM calls WHERE call_id IN (${placeholders})`)
+    .bind(...ids)
     .run();
-  return result.meta.changes ?? 0;
+  return deleted.meta.changes ?? 0;
 }
 
 export async function touchDevice(env: Env, address: string, info?: DeviceInfo): Promise<void> {
