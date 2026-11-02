@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+*.tsbuildinfo
+.worktrees/
+target/
+agent/target/
+.DS_Store

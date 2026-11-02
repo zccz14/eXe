@@ -1,0 +1,28 @@
+[package]
+name = "exe"
+description = "eXe desktop agent (Windows, Linux, macOS)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "exe"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+exe-core = { path = "../exe-core" }
+futures-util = "0.3"
+hex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
