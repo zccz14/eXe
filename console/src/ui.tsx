@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
+import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
@@ -41,8 +41,18 @@ export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElem
   );
 }
 
-export function Card({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cn("rounded-xl border border-border bg-card p-4 text-card-foreground", className)}>{children}</div>;
+export function Card({
+  className,
+  children,
+  ...props
+}: { className?: string; children: ReactNode } & HTMLAttributes<HTMLDivElement>) {
+  // Props are forwarded on purpose: a Card that silently drops them turns a
+  // clickable card into a dead one, and that failure is invisible in review.
+  return (
+    <div {...props} className={cn("rounded-xl border border-border bg-card p-4 text-card-foreground", className)}>
+      {children}
+    </div>
+  );
 }
 
 export function Badge({ tone = "muted", children }: { tone?: "muted" | "ok" | "warn" | "bad"; children: ReactNode }) {

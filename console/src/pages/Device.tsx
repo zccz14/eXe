@@ -162,6 +162,12 @@ export function DevicePage() {
         </div>
       </Card>
 
+      {device && !device.registered && (
+        <div className="rounded-xl border border-amber-500/40 p-4 text-sm text-amber-600 dark:text-amber-400">
+          {t("device_not_registered")}
+        </div>
+      )}
+
       <Card className="space-y-3">
         <div className="text-sm font-medium">{t("send_call")}</div>
         <div className="flex flex-col gap-2 sm:flex-row">
