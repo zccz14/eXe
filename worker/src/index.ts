@@ -3,6 +3,7 @@ import * as consoleApi from "./console.ts";
 import type { Env } from "./db.ts";
 import * as device from "./device.ts";
 import { ApiError, failure, json } from "./http.ts";
+import pkg from "../../package.json" with { type: "json" };
 
 /** The console is served from Pages, so it is a different origin than the relay. */
 function corsHeaders(request: Request, env: Env): Headers | null {
@@ -44,7 +45,7 @@ export default {
         if (!headers) throw new ApiError(403, "origin is not allowed");
         return new Response(null, { status: 204, headers });
       }
-      if (path === "/api/health") return withCors(request, env, json({ ok: true, service: "exe", now: Math.floor(Date.now() / 1000) }));
+      if (path === "/api/health") return withCors(request, env, json({ ok: true, service: "exe", version: pkg.version, now: Math.floor(Date.now() / 1000) }));
 
       // --- devices: self-signed, no bearer token -------------------------------
       let match = path.match(new RegExp(`^/v1/agents/${ADDRESS}$`));
