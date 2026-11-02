@@ -6,11 +6,16 @@ import assert from "node:assert/strict";
 import { makeBrowser, now, signedHeaders } from "./browser.mjs";
 import {
   addressOf,
+  agreementPublic,
   b64u,
   buildResult,
   newIdentity,
+  openAttachment,
   openCall,
+  parseAddress,
+  seal,
   signRequest,
+  unb64u,
   verifyCall,
 } from "../shared/protocol.ts";
 
@@ -440,6 +445,89 @@ async function run() {
   // A command is a line of shell: its envelope is bounded by one body limit.
   const fatCommand = browser.signCall(bulkAddress, "shell", { command: "x".repeat(70_000) });
   assert.equal((await issue(fatCommand)).status, 413, "a command envelope over 64 KiB is refused");
+
+  // --- a result too big for one row travels as an attachment ----------------
+  // Same seal, same call binding, raw bytes in an object store instead of a
+  // column. The relay stores what it cannot read and keeps only the size.
+  const heavy = newIdentity();
+  const heavyAddress = (await registerDevice(heavy, [browser.address], "run-heavy")).address;
+  const heavyEnvelope = browser.signCall(heavyAddress, "shell", { command: "printf heavy" });
+  const heavyCallPath = `/api/devices/${heavyAddress}/calls`;
+  assert.equal(
+    (await fetch(`${base}${heavyCallPath}`, {
+      method: "POST",
+      headers: { ...signedHeaders(browser.identity, "POST", heavyCallPath), "content-type": "application/json" },
+      body: JSON.stringify(heavyEnvelope),
+    })).status,
+    200,
+  );
+  const heavyPlaintext = JSON.stringify({ ok: true, output: { tool: "shell", stdout: "q".repeat(2_000_000) } });
+  const heavyIssuedAt = now();
+  const sealedBytes = unb64u(
+    seal({
+      direction: "blob",
+      issuer: browser.address,
+      device: heavyAddress,
+      callId: heavyEnvelope.call_id,
+      issuedAt: heavyIssuedAt,
+      expiresAt: heavyEnvelope.expires_at,
+      recipient: agreementPublic(parseAddress(browser.address)),
+      plaintext: heavyPlaintext,
+    }),
+  );
+  const blobPath = `/v1/devices/${heavyAddress}/calls/${heavyEnvelope.call_id}/blob`;
+  assert.equal(
+    (await fetch(`${base}${blobPath}`, {
+      method: "PUT",
+      headers: { ...signedHeaders(heavy, "PUT", blobPath), "content-type": "application/octet-stream" },
+      body: sealedBytes,
+    })).status,
+    204,
+    "the device may attach the bytes it could not put in a row",
+  );
+
+  const readPath = `/api/calls/${heavyEnvelope.call_id}/blob`;
+  const fetchedBlob = new Uint8Array(
+    await (await fetch(`${base}${readPath}`, { headers: signedHeaders(browser.identity, "GET", readPath) })).arrayBuffer(),
+  );
+  const openedBlob = JSON.parse(
+    openAttachment({
+      seed: browser.identity.seed,
+      call: { call_id: heavyEnvelope.call_id, issuer: browser.address, device: heavyAddress, expires_at: heavyEnvelope.expires_at },
+      result: { issued_at: heavyIssuedAt },
+      sealed: fetchedBlob,
+    }),
+  );
+  assert.equal(openedBlob.output.stdout.length, 2_000_000, "two megabytes survive the round trip");
+
+  // The row keeps the summary, not the bytes: the device still signs one result.
+  const summaryPath = `/v1/devices/${heavyAddress}/calls/${heavyEnvelope.call_id}/result`;
+  const summary = buildResult({
+    seed: heavy.seed,
+    call: heavyEnvelope,
+    ok: true,
+    plaintext: JSON.stringify({ ok: true, output: { tool: "shell", truncated: true, bytes: 2_000_000 }, blob: { bytes: sealedBytes.length } }),
+    issuedAt: now(),
+  });
+  assert.equal(
+    (await fetch(`${base}${summaryPath}`, {
+      method: "POST",
+      headers: { ...signedHeaders(heavy, "POST", summaryPath), "content-type": "application/json" },
+      body: JSON.stringify(summary),
+    })).status,
+    204,
+  );
+  const summaryView = await browser.request(base, "GET", `/api/calls/${heavyEnvelope.call_id}`);
+  assert.equal(summaryView.call.blob_bytes, sealedBytes.length, "the row knows how big the attachment is");
+  assert.equal(JSON.stringify(summaryView).includes("qqqqq"), false, "and carries none of it");
+
+  const strangerRead = await fetch(`${base}${readPath}`, { headers: signedHeaders(stranger.identity, "GET", readPath) });
+  assert.equal(strangerRead.status, 404, "an attachment belongs to the console that signed the call");
+
+  // Retention takes the attachment with the row: one lifecycle, one delete.
+  d1(`UPDATE calls SET settled_at=${now() - 8 * 24 * 60 * 60} WHERE call_id='${heavyEnvelope.call_id}'`);
+  assert.equal((await fetch(`${base}/__scheduled?cron=${encodeURIComponent("41 * * * *")}`)).status, 200);
+  assert.equal((await fetch(`${base}${readPath}`, { headers: signedHeaders(browser.identity, "GET", readPath) })).status, 404, "the attachment goes with the call");
 
   // Retention: settled and old is deleted, settled and fresh is not.
   const staleId = crypto.randomUUID();

@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS calls (
   device_run_id  TEXT,              -- 签收据的那枚 run；与当前 run_id 不同即为孤儿
   settled_at     INTEGER,
   result         TEXT,              -- the sealed result envelope, verbatim
+  blob_bytes     INTEGER,           -- sealed attachment in R2 when the result was too big for this row
   cancel_requested_at INTEGER,
   created_at     INTEGER NOT NULL
 );

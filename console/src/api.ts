@@ -46,6 +46,14 @@ async function message(response: Response): Promise<string> {
   }
 }
 
+/** A sealed attachment is bytes, not JSON; the caller decrypts it. */
+export async function apiBytes(path: string): Promise<Uint8Array> {
+  let response = await send(path, {});
+  if (response.status === 401) response = await send(path, {});
+  if (!response.ok) throw new Error(await message(response));
+  return new Uint8Array(await response.arrayBuffer());
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response = await send(path, init);
   if (response.status === 401) response = await send(path, init);
@@ -76,6 +84,8 @@ export interface CallView {
   received_at: number | null;
   settled_at: number | null;
   has_result: boolean;
+  /** Size of the attachment when the result was too big for the row. */
+  blob_bytes: number | null;
 }
 
 /** The relay only ever knows this browser as an address. */

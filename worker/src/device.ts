@@ -22,6 +22,8 @@ const PENDING_LIMIT = 16;
  * room for that envelope instead of discovering the ceiling as a 500.
  */
 const MAX_RESULT_BODY = 1_900_000;
+/** A device may attach more than a row could hold, but not without bound. */
+const MAX_BLOB_BYTES = 16 * 1024 * 1024;
 /** A device never needs to trust more issuers than this. */
 const MAX_TRUST_ENTRIES = 64;
 
@@ -216,6 +218,29 @@ export async function markReceived(request: Request, env: Env, address: string, 
     .bind(now(), address, callId, address)
     .run();
   if (result.meta.changes === 0) throw new ApiError(409, "call is not awaiting a receipt");
+  return empty();
+}
+
+/**
+ * The sealed result, when it is too big for the row that will point at it. The
+ * relay writes bytes it cannot read and records only their size; the console is
+ * the only party that can open them. Keyed by `call_id`, so an attachment has
+ * exactly the lifetime and the identity of the call it belongs to — nothing new
+ * is invented on this side.
+ */
+export async function uploadBlob(request: Request, env: Env, address: string, callId: string): Promise<Response> {
+  await authenticateDevice({ request, env, address });
+  const call = await callById(env, callId);
+  if (!call || call.device_address !== address) throw new ApiError(404, "unknown call");
+  if (call.expires_at <= now()) throw new ApiError(409, "call has expired");
+  const declared = Number(request.headers.get("content-length") ?? "");
+  if (!Number.isFinite(declared) || declared <= 0) throw new ApiError(411, "content-length is required");
+  if (declared > MAX_BLOB_BYTES) throw new ApiError(413, `an attachment may not exceed ${MAX_BLOB_BYTES} bytes`);
+  if (!request.body) throw new ApiError(400, "an attachment needs a body");
+  await env.BLOBS.put(callId, request.body);
+  await env.DB.prepare("UPDATE calls SET blob_bytes=? WHERE call_id=? AND device_address=?")
+    .bind(declared, callId, address)
+    .run();
   return empty();
 }
 

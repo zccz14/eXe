@@ -94,8 +94,10 @@ sealed      = base64url( nonce24 ‖ eph_pub32 ‖ box ‖ iv12 ‖ body )
 - 正文用 AES-256-GCM：浏览器与 Rust 都有硬件加速，正文可以随便变大（截图、文件片段），
   曲线运算的成本固定在 32 字节。
 - `aad` 的每个字段按 **lp 编码**（`u32be(len) ‖ UTF-8`）拼接，时间戳是 `u64be`。
-  `direction` 是 `"call"` 或 `"result"`；结果沿用**原调用**的 `issuer`/`device`/`call_id`/`expires_at`，
+  `direction` 是 `"call"`、`"result"` 或 `"blob"`；结果沿用**原调用**的 `issuer`/`device`/`call_id`/`expires_at`，
   `issued_at` 用结果自己的时间。改任何一个字段，正文就打不开。
+  装不进一行结果时，正文用 `"blob"` 方向另封一份、原样存进对象存储（R2），行里只留指针——
+  方向不同，附件就永远不会被当成信封，也不会串到另一条调用上。
 - 固定头部 116 字节（24 + 32 + 48 + 12），其后是 `body`（至少 16 字节的 GCM tag）。
 
 ## 4. 报文
@@ -151,11 +153,13 @@ lost  = 它被一个已经不存在的进程接手过，结果未知
 ## 5. 云端能看到什么
 
 ```
-call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
+call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态, blob_bytes
 设备登记：platform, version, trust(副本), run_id, 首次/最后活跃
 ```
 
-看不到：工具名、参数、输出、结果正文。云端因此也做不了任何内容相关的判断——
+`blob_bytes` 是附件的密文字节数——云端知道有多大，不知道是什么。
+
+看不到：工具名、参数、输出、结果正文、附件正文。云端因此也做不了任何内容相关的判断——
 "能不能执行"只由设备上的 `trust` 列表回答。
 
 ## 6. 接口
@@ -167,6 +171,7 @@ call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
 | PUT | `/v1/devices/{address}` | 自登记/续约（`platform`/`version`/`trust`/`run_id`） |
 | GET | `/v1/devices/{address}/stream` | SSE：`hello` / `call` / `cancel` / `heartbeat` |
 | POST | `/v1/devices/{address}/calls/{call_id}/received` | 收到（唯一的妥投证据） |
+| PUT | `/v1/devices/{address}/calls/{call_id}/blob` | 上传附件（结果装不进一行时） |
 | POST | `/v1/devices/{address}/calls/{call_id}/result` | 回传密封结果 |
 
 控制台（同样是每次请求自签，见 §2；地址在 `x-exe-address`）：
@@ -177,6 +182,7 @@ call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
 | GET | `/api/devices/{address}` | 该地址的在线态与自登记信息（`registered` / `online` / `last_seen_at`） |
 | POST | `/api/devices/{address}/calls` | 投递信封（只接受该设备声明信任的签发者） |
 | GET | `/api/calls?device={address}` · `/api/calls/{call_id}` | 状态与信封（浏览器自行解封） |
+| GET | `/api/calls/{call_id}/blob` | 取回附件的密文（只有签发者能取） |
 | POST | `/api/calls/{call_id}/cancel` | 请求取消 |
 
 控制台没有注册这一步：地址由浏览器自己生成，第一次请求就生效。归属由签名回答，
@@ -216,7 +222,9 @@ lost        被一个已经死掉的进程接手过，结果未知（不重投�
 | 项 | 值 | 说明 |
 |---|---|---|
 | 单次运行上限 | 60 s | 超时杀进程，回 `ok: false, code: "timeout"` |
-| 输出上限 | 1.4 MB | stdout 与 stderr **合计**，stdout 优先。结果是 D1 里的一行，而行上限是 2 MB；密封后的 base64url 是明文的 1.33 倍，所以 1.4 MB 是能原样带回来的最大输出。要更大的东西（截图、文件），先 `base64` 再看这条线 |
+| 输出上限 | 10 MB | stdout 与 stderr **合计**，stdout 优先。这是设备愿意缓冲的上限，不是一行装得下的上限 |
+| 内联阈值 | 1.4 MB | 结果超过它就改走附件：正文以 `"blob"` 方向另封、存进 R2，行里只留 `blob_bytes` 和一句 `truncated` 摘要。D1 一行 2 MB，密封后的 base64url 又是明文的 1.33 倍，所以 1.4 MB 是一条行能带回来的最大量 |
+| 附件上限 | 16 MB | 单个附件的密文大小；附件随调用一起过期 |
 
 这个 shell 以设备用户的身份运行，没有沙箱、没有二次确认。这就是「信任即授权」的代价：
 信任错一个地址，等于把整台机器交出去。

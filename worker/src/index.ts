@@ -72,6 +72,8 @@ export default {
       if (match && method === "PUT") return await device.registerDevice(request, env, match[1]!);
       match = path.match(new RegExp(`^/v1/devices/${ADDRESS}/stream$`));
       if (match && method === "GET") return await device.eventStream(request, env, match[1]!);
+      match = path.match(new RegExp(`^/v1/devices/${ADDRESS}/calls/${CALL_ID}/blob$`));
+      if (match && method === "PUT") return await device.uploadBlob(request, env, match[1]!, match[2]!);
       match = path.match(new RegExp(`^/v1/devices/${ADDRESS}/calls/${CALL_ID}/(received|result)$`));
       if (match && method === "POST") {
         return match[3] === "received"
@@ -92,6 +94,8 @@ export default {
           if (match && method === "POST") return await consoleApi.createCall(env, address, match[1]!, request);
           match = path.match(new RegExp(`^/api/calls/${CALL_ID}$`));
           if (match && method === "GET") return await consoleApi.readCall(env, address, match[1]!);
+          match = path.match(new RegExp(`^/api/calls/${CALL_ID}/blob$`));
+          if (match && method === "GET") return await consoleApi.readBlob(env, address, match[1]!);
           match = path.match(new RegExp(`^/api/calls/${CALL_ID}/cancel$`));
           if (match && method === "POST") return await consoleApi.cancelCall(env, address, match[1]!);
           throw new ApiError(404, "unknown console endpoint");

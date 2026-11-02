@@ -7,8 +7,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makeBrowser } from "./browser.mjs";
-import { addressOf, decodeSecret } from "../shared/protocol.ts";
+import { makeBrowser, signedHeaders } from "./browser.mjs";
+import { addressOf, decodeSecret, openAttachment } from "../shared/protocol.ts";
 
 const PORT = 8787;
 const base = `http://127.0.0.1:${PORT}`;
@@ -108,6 +108,22 @@ async function main() {
     const cwdResult = await settle(cwd.call.call_id);
     assert.equal(cwdResult.opened.ok, true);
     assert.ok(cwdResult.opened.output.stdout.trim().length > 0, "cwd is honoured");
+
+    // A result too big for one row comes back as an attachment: the device seals
+    // it separately, the relay stores bytes it cannot read, the console opens it.
+    const heavy = await browser.call(base, deviceAddress, "shell", { command: "head -c 2000000 /dev/zero | tr '\\0' 'q'" });
+    const heavyDetail = await settle(heavy.call.call_id);
+    assert.equal(heavyDetail.opened.ok, true);
+    assert.equal(heavyDetail.opened.output.truncated, true, "the row carries a summary, not two megabytes");
+    assert.ok(heavyDetail.opened.blob.bytes > 2_000_000, "the attachment is announced");
+    const blobPath = `/api/calls/${heavy.call.call_id}/blob`;
+    const blobResponse = await fetch(`${base}${blobPath}`, { headers: signedHeaders(browser.identity, "GET", blobPath) });
+    assert.equal(blobResponse.status, 200, "the console can fetch the attachment");
+    const sealedBlob = new Uint8Array(await blobResponse.arrayBuffer());
+    const full = JSON.parse(
+      openAttachment({ seed: browser.identity.seed, call: heavyDetail.call, result: heavyDetail.result, sealed: sealedBlob }),
+    );
+    assert.equal(full.output.stdout.length, 2_000_000, "two megabytes survive the device's own seal");
 
     // The retired demo verbs are gone from the client, not just from the console.
     const retired = await browser.call(base, deviceAddress, "sysinfo", {});
