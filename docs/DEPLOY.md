@@ -22,9 +22,8 @@ token audience 必须与它逐字一致。
   建议保持单一 `exe.ntnl.io`。控制台额外向 AuthMini 申请的 audience
   （默认 `exe.ntnl.io,linkit.ntnl.io`，供共享外壳的 Linkit 组件使用）
   由构建期 `VITE_AUTH_AUDIENCES` 控制，不影响 API 授权。
-- 从旧版本（云端托管私钥）升级：先跑 `worker/migrations/002-non-custodial.sql`
-  清掉旧表，再跑 `schema.sql`，最后 `wrangler secret delete EXE_KEK`。
-  旧账号需要在新浏览器里重新登记公钥。
+- 目前尚在 1.0 之前：结构变更以「删表重建」处理（`DROP TABLE` 后重跑
+  `schema.sql`），没有需要保留的迁移历史。
 
 ## 日常发布
 

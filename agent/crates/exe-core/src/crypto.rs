@@ -148,6 +148,92 @@ fn seal_aad(call_id: &str, device_id: &str) -> Vec<u8> {
     aad
 }
 
+fn call_seal_key(shared: &[u8; 32], call_id: &str, device_id: &str) -> [u8; 32] {
+    let mut salt_input = Vec::new();
+    salt_input.extend_from_slice(b"eXe/v1/call");
+    push_lp(&mut salt_input, call_id.as_bytes());
+    push_lp(&mut salt_input, device_id.as_bytes());
+    let salt = sha256(&salt_input);
+    let hk = Hkdf::<Sha256>::new(Some(&salt), shared);
+    let mut okm = [0u8; 32];
+    hk.expand(b"eXe/v1/seal-call", &mut okm)
+        .expect("32-byte hkdf output");
+    okm
+}
+
+fn call_aad(call_id: &str, device_id: &str, account_id: &str) -> Vec<u8> {
+    let mut aad = Vec::new();
+    push_lp(&mut aad, call_id.as_bytes());
+    push_lp(&mut aad, device_id.as_bytes());
+    push_lp(&mut aad, account_id.as_bytes());
+    aad
+}
+
+/// Opens a sealed command with the device key agreement secret.
+pub fn open_call(
+    device_kex_secret: &[u8],
+    call_id: &str,
+    device_id: &str,
+    account_id: &str,
+    eph: &[u8],
+    nonce: &[u8],
+    ciphertext: &[u8],
+) -> Result<String, CryptoError> {
+    let secret: [u8; 32] = device_kex_secret.try_into().map_err(|_| CryptoError::Key)?;
+    let eph: [u8; 32] = eph.try_into().map_err(|_| CryptoError::Key)?;
+    let static_secret = StaticSecret::from(secret);
+    let shared = static_secret
+        .diffie_hellman(&X25519Public::from(eph))
+        .to_bytes();
+    let key = call_seal_key(&shared, call_id, device_id);
+    let cipher = ChaCha20Poly1305::new((&key).into());
+    let plaintext = cipher
+        .decrypt(
+            Nonce::from_slice(nonce),
+            Payload {
+                msg: ciphertext,
+                aad: &call_aad(call_id, device_id, account_id),
+            },
+        )
+        .map_err(|_| CryptoError::Open)?;
+    String::from_utf8(plaintext).map_err(|_| CryptoError::Open)
+}
+
+/// Seals a command to a device (used by tests and tooling, never by the worker).
+pub fn seal_call(
+    call_id: &str,
+    device_id: &str,
+    account_id: &str,
+    device_kex_public: &[u8],
+    plaintext: &str,
+) -> Result<SealedResult, CryptoError> {
+    let ephemeral_secret = random_bytes::<32>();
+    let ephemeral = StaticSecret::from(ephemeral_secret);
+    let peer: [u8; 32] = device_kex_public.try_into().map_err(|_| CryptoError::Key)?;
+    let shared = ephemeral
+        .diffie_hellman(&X25519Public::from(peer))
+        .to_bytes();
+    let key = call_seal_key(&shared, call_id, device_id);
+    let nonce = random_bytes::<12>();
+    let cipher = ChaCha20Poly1305::new((&key).into());
+    let ciphertext = cipher
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: plaintext.as_bytes(),
+                aad: &call_aad(call_id, device_id, account_id),
+            },
+        )
+        .map_err(|_| CryptoError::Open)?;
+    Ok(SealedResult {
+        v: 1,
+        ok: true,
+        eph: b64u(X25519Public::from(&ephemeral).as_bytes()),
+        nonce: b64u(&nonce),
+        ct: b64u(&ciphertext),
+    })
+}
+
 /// Seals a result for the account: X25519(ephemeral, account_kex_pub) + ChaCha20-Poly1305.
 pub fn seal_result(
     call_id: &str,

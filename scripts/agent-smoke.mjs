@@ -93,16 +93,16 @@ async function main() {
       throw new Error(`call ${callId} did not settle`);
     };
 
-    const echo = await browser.call(base, auth, deviceId, userId, "echo", { text: "hello from rust" });
+    const echo = await browser.call(base, auth, deviceId, userId, devices.devices[0].kex_pub, "echo", { text: "hello from rust" });
     const echoResult = await settle(echo.call.id);
     assert.equal(echoResult.opened.output.text, "hello from rust");
 
-    const sysinfo = await browser.call(base, auth, deviceId, userId, "sysinfo", {});
+    const sysinfo = await browser.call(base, auth, deviceId, userId, devices.devices[0].kex_pub, "sysinfo", {});
     const sysinfoResult = await settle(sysinfo.call.id);
     assert.equal(sysinfoResult.opened.output.tool, "sysinfo");
 
     // Default policy denies the shell even though the signature is valid.
-    const bash = await browser.call(base, auth, deviceId, userId, "bash", { command: "id" });
+    const bash = await browser.call(base, auth, deviceId, userId, devices.devices[0].kex_pub, "bash", { command: "id" });
     const bashResult = await settle(bash.call.id);
     assert.equal(bashResult.opened.ok, false);
     assert.equal(bashResult.opened.code, "policy_denied");

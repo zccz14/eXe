@@ -75,8 +75,6 @@ function deviceView(row: DeviceRow): DeviceView {
 export interface CallView {
   id: string;
   device_id: string;
-  name: string;
-  args: string;
   status: string;
   issued_at: number;
   expires_at: number;
@@ -92,8 +90,6 @@ function callView(row: CallRow): CallView {
   return {
     id: row.id,
     device_id: row.device_id,
-    name: row.name,
-    args: row.args,
     status: row.status,
     issued_at: row.issued_at,
     expires_at: row.expires_at,
@@ -261,30 +257,45 @@ export async function denyPairing(env: Env, userId: string, rawCode: string): Pr
 
 interface CallInput {
   id?: unknown;
-  name?: unknown;
-  args?: unknown;
+  eph?: unknown;
   nonce?: unknown;
+  ct?: unknown;
   issued_at?: unknown;
   expires_at?: unknown;
   sig?: unknown;
 }
 
-/** Accepts a fully signed call. The worker never chooses or reshapes its contents. */
+function sealed(value: unknown, field: string, bytes: number): Uint8Array {
+  if (typeof value !== "string") throw new ApiError(400, `${field} is required`);
+  let raw: Uint8Array;
+  try {
+    raw = unb64u(value);
+  } catch {
+    throw new ApiError(400, `${field} is not base64url`);
+  }
+  if (raw.length !== bytes) throw new ApiError(400, `${field} must be ${bytes} bytes`);
+  return raw;
+}
+
+/**
+ * Accepts an opaque, signed command. The worker cannot read the tool or its
+ * arguments: it verifies the account signature over the ciphertext and forwards.
+ */
 export async function createCall(env: Env, userId: string, deviceId: string, request: Request): Promise<Response> {
   const input = await body<CallInput>(request);
   const account = await requireAccount(env, userId);
   const id = str(input.id, "id", 36);
   if (!/^[0-9a-fA-F-]{36}$/.test(id)) throw new ApiError(400, "id must be a UUID");
-  const name = str(input.name, "name", 64);
-  if (!/^[a-z][a-z0-9_:.-]*$/.test(name)) throw new ApiError(400, "invalid tool name");
-  const args = str(input.args, "args", 65536);
+  const eph = sealed(input.eph, "eph", 32);
+  const nonce = sealed(input.nonce, "nonce", 12);
+  if (typeof input.ct !== "string") throw new ApiError(400, "ct is required");
+  let ciphertext: Uint8Array;
   try {
-    const parsed = JSON.parse(args) as unknown;
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error();
+    ciphertext = unb64u(input.ct);
   } catch {
-    throw new ApiError(400, "args must be a JSON object serialized as a string");
+    throw new ApiError(400, "ct is not base64url");
   }
-  const nonce = str(input.nonce, "nonce", 64);
+  if (ciphertext.length < 17 || ciphertext.length > 65536) throw new ApiError(400, "ct has an unsupported size");
   const issuedAt = num(input.issued_at, "issued_at");
   const expiresAt = num(input.expires_at, "expires_at");
   const signature = str(input.sig, "sig", 128);
@@ -296,16 +307,15 @@ export async function createCall(env: Env, userId: string, deviceId: string, req
   if (!device || device.owner_user_id !== userId) throw new ApiError(404, "device not found");
   if (device.status !== "active") throw new ApiError(409, "device is revoked");
 
-  const fields = { callId: id, deviceId: device.id, accountId: userId, name, args, nonce, issuedAt, expiresAt };
+  const fields = { callId: id, deviceId: device.id, accountId: userId, eph, nonce, ciphertext, issuedAt, expiresAt };
   if (!verifyCall(account.sig_pub, fields, signature)) {
     throw new ApiError(403, "call signature does not verify against the registered account key");
   }
-  const existing = await callById(env, id);
-  if (existing) throw new ApiError(409, "call id already used");
+  if (await callById(env, id)) throw new ApiError(409, "call id already used");
   await env.DB.batch([
     env.DB.prepare(
-      "INSERT INTO calls(id,device_id,owner_user_id,name,args,nonce,issued_at,expires_at,sig,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,'queued',?)",
-    ).bind(id, device.id, userId, name, args, nonce, issuedAt, expiresAt, signature, now()),
+      "INSERT INTO calls(id,device_id,owner_user_id,eph,nonce,ct,issued_at,expires_at,sig,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,'queued',?)",
+    ).bind(id, device.id, userId, b64u(eph), b64u(nonce), b64u(ciphertext), issuedAt, expiresAt, signature, now()),
     env.DB.prepare("UPDATE calls SET status='expired' WHERE device_id=? AND status='queued' AND expires_at<=?").bind(device.id, now()),
   ]);
   return json({ call: callView((await callById(env, id))!) });

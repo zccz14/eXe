@@ -220,12 +220,19 @@ async fn execute_call(
         .bearer_auth(&config.token)
         .send()
         .await;
+    let sealed = match call.open(&keys.kex.secret) {
+        Ok(sealed) => sealed,
+        Err(error) => {
+            warn!(call = call.id.as_str(), %error, "could not open the sealed command");
+            return;
+        }
+    };
     info!(
         call = call.id.as_str(),
-        tool = call.name.as_str(),
+        tool = sealed.name.as_str(),
         "executing"
     );
-    let plaintext = crate::exec::execute(policy, &call).await;
+    let plaintext = crate::exec::execute(policy, &sealed.name, &sealed.args).await;
     let ok = serde_json::from_str::<serde_json::Value>(&plaintext)
         .ok()
         .and_then(|value| value.get("ok").and_then(serde_json::Value::as_bool))
