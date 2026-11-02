@@ -13,12 +13,13 @@
     {
       "binding": "DB",
       "database_name": "exe",
-      "database_id": "00000000-0000-0000-0000-000000000000"
+      "database_id": "0db45c1a-59da-4109-87fc-d025cf4d3aad"
     }
   ],
   "vars": {
     "AUTH_ISSUER": "https://auth.ntnl.io",
     "AUTH_AUDIENCE": "exe.ntnl.io"
   },
+  "routes": [{ "pattern": "exe.ntnl.io", "custom_domain": true }],
   "observability": { "enabled": true }
 }
