@@ -7,6 +7,7 @@
 - 设计约束：[`docs/SOUL.md`](docs/SOUL.md)
 - 线协议：[`docs/PROTOCOL.md`](docs/PROTOCOL.md)
 - 威胁模型与托管等级：[`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md)
+- 中继传输决策（为什么是 SSE + D1 轮询）：[`docs/RELAY.md`](docs/RELAY.md)
 
 ## 组成
 

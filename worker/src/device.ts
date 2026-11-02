@@ -42,6 +42,34 @@ export async function registerAgent(request: Request, env: Env, address: string)
   });
 }
 
+/**
+ * One read-only round trip tells the stream loop whether there is anything to
+ * do. Polls are cheap reads; writes happen only when a call or a cancellation
+ * actually exists, so idle devices never contend on the single D1 primary.
+ */
+interface Pending {
+  hasCall: boolean;
+  hasReplay: boolean;
+  hasCancel: boolean;
+}
+
+async function peek(env: Env, address: string): Promise<Pending> {
+  const stamp = now();
+  const row = await env.DB.prepare(
+    `SELECT
+       EXISTS(SELECT 1 FROM calls WHERE device_address=? AND status='queued' AND expires_at>?) AS has_call,
+       EXISTS(SELECT 1 FROM calls WHERE device_address=? AND status IN ('queued','delivered') AND expires_at>? AND (delivered_at IS NULL OR delivered_at<=?)) AS has_replay,
+       EXISTS(SELECT 1 FROM calls WHERE device_address=? AND status IN ('queued','delivered','received') AND cancel_requested_at IS NOT NULL AND cancel_notified_at IS NULL) AS has_cancel`,
+  )
+    .bind(address, stamp, address, stamp, stamp - LOST_AFTER_SECONDS, address)
+    .first<{ has_call: number; has_replay: number; has_cancel: number }>();
+  return {
+    hasCall: row?.has_call === 1,
+    hasReplay: row?.has_replay === 1,
+    hasCancel: row?.has_cancel === 1,
+  };
+}
+
 async function claimCall(env: Env, address: string): Promise<CallRow | null> {
   const rows = await env.DB.prepare(
     `UPDATE calls SET status='delivered', delivered_at=?
@@ -112,17 +140,20 @@ export async function eventStream(request: Request, env: Env, address: string): 
       await writer.write(sseChunk("hello", { address, now: now() }));
       let lastReplay = 0;
       while (Date.now() - startedAt < STREAM_MAX_SECONDS * 1000) {
-        const call = await claimCall(env, address);
+        const pending = await peek(env, address);
+        const call = pending.hasCall ? await claimCall(env, address) : null;
         if (call) {
           await writer.write(sseChunk("call", envelopeOf(call)));
         } else {
           if (Date.now() - lastReplay > 15_000) {
             lastReplay = Date.now();
-            for (const replay of await claimReplays(env, address)) {
-              await writer.write(sseChunk("call", envelopeOf(replay)));
+            if (pending.hasReplay) {
+              for (const replay of await claimReplays(env, address)) {
+                await writer.write(sseChunk("call", envelopeOf(replay)));
+              }
             }
           }
-          const cancelled = await claimCancellation(env, address);
+          const cancelled = pending.hasCancel ? await claimCancellation(env, address) : null;
           if (cancelled) await writer.write(sseChunk("cancel", { call_id: cancelled }));
           else await writer.write(sseChunk("heartbeat", { now: now() }));
         }
