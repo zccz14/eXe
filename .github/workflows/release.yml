@@ -95,8 +95,12 @@ jobs:
         if: matrix.ndk
         with:
           ndk-version: r27c
+      - uses: taiki-e/install-action@v2
+        if: matrix.ndk
+        with:
+          tool: cargo-ndk
       - if: matrix.ndk
-        run: cargo install cargo-ndk --locked && cargo ndk -t arm64-v8a build --manifest-path agent/Cargo.toml -p exe-mobile --release
+        run: cargo ndk -t arm64-v8a build --manifest-path agent/Cargo.toml -p exe-mobile --release
       - if: ${{ !matrix.ndk }}
         run: cargo build --manifest-path agent/Cargo.toml -p exe-mobile --release --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4

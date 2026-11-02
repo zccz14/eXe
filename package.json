@@ -3,22 +3,23 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "packageManager": "pnpm@10.15.0",
+  "packageManager": "pnpm@11.22.0",
   "dependencies": {
     "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261102.1",
+    "@cloudflare/workers-types": "5.20261025.1",
     "typescript": "^7.0.2",
-    "wrangler": "^4.156.1"
+    "wrangler": "4.152.0",
+    "@types/node": "^24.0.0"
   },
   "scripts": {
     "build": "pnpm --dir console build",
     "dev": "wrangler dev",
     "deploy": "pnpm build && wrangler deploy",
-    "typecheck": "tsc --noEmit && pnpm --dir console exec tsc -b",
+    "typecheck": "tsc --noEmit && tsc -p tests/tsconfig.json && pnpm --dir console exec tsc -b",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "check": "pnpm typecheck && pnpm test",
     "vectors": "node --experimental-strip-types scripts/vectors.ts",
