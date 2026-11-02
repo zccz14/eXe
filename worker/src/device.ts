@@ -25,7 +25,7 @@ const PENDING_LIMIT = 16;
 const MAX_RESULT_BODY = 512 * 1024;
 /** A device may attach more than a row could hold, but not without bound. */
 const MAX_BLOB_BYTES = 16 * 1024 * 1024;
-/** A device never needs to trust more issuers than this. */
+/** A device never needs to trust more callers than this. */
 const MAX_TRUST_ENTRIES = 64;
 
 function text(value: unknown, field: string, max: number): string {
@@ -125,7 +125,7 @@ function sseChunk(event: string, data: unknown): Uint8Array {
 function envelopeOf(call: CallRow): CallEnvelope {
   return {
     call_id: call.call_id,
-    issuer: call.issuer,
+    caller: call.caller,
     device: call.device_address,
     issued_at: call.issued_at,
     expires_at: call.expires_at,

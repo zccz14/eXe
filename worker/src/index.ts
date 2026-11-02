@@ -35,7 +35,7 @@ const ADDRESS = "([1-9A-HJ-NP-Za-km-z]{32,64})";
 const CALL_ID = "([0-9a-zA-Z-]{8,64})";
 
 /**
- * How long a settled call waits for its issuer to pick it up. The relay is an
+ * How long a settled call waits for its caller to pick it up. The relay is an
  * exchange, not an archive: the normal path is an explicit `ack` that deletes
  * the row the moment the caller has the result, and this is only the fallback
  * for a caller that closed its browser first.

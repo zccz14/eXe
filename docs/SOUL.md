@@ -40,9 +40,9 @@
    ↓
 人在调用方填设备地址；在设备上填调用方地址（trust）
    ↓
-云端排队信封 → SSE 下发 {call_id, issuer, device, sealed, sig, issued_at, expires_at}
+云端排队信封 → SSE 下发 {call_id, caller, device, sealed, sig, issued_at, expires_at}
    ↓
-设备: 验签（issuer 在 trust 里）→ 验时间窗 → 用自己的密钥解开指令 → 执行
+设备: 验签（caller 在 trust 里）→ 验时间窗 → 用自己的密钥解开指令 → 执行
    ↓
 设备: 用同一把密钥派生的 X25519 封装结果 + Ed25519 签名 → POST 回传
    ↓

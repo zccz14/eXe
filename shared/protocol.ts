@@ -189,18 +189,18 @@ export type Direction = "call" | "result" | "blob";
 
 export interface SealContext {
   direction: Direction;
-  issuer: string;
+  caller: string;
   device: string;
   callId: string;
   issuedAt: number;
   expiresAt: number;
 }
 
-/** aad = direction || issuer || device || call_id || issued_at || expires_at */
+/** aad = direction || caller || device || call_id || issued_at || expires_at */
 export function associatedData(context: SealContext): Uint8Array {
   return cat(
     lp(utf8(context.direction)),
-    lp(utf8(context.issuer)),
+    lp(utf8(context.caller)),
     lp(utf8(context.device)),
     lp(utf8(context.callId)),
     u64be(context.issuedAt),
@@ -351,7 +351,7 @@ export function parseSealed(sealed: string): SealParts {
 
 export interface CallEnvelope {
   call_id: string;
-  issuer: string;
+  caller: string;
   device: string;
   issued_at: number;
   expires_at: number;
@@ -366,7 +366,7 @@ export interface ResultEnvelope {
   /** Signed, not sealed: the cloud sees success or failure but never the output. */
   ok: boolean;
   issued_at: number;
-  /** Sealed to the issuer's X25519 key. */
+  /** Sealed to the caller's X25519 key. */
   sealed: string;
   sig: string;
 }
@@ -376,7 +376,7 @@ export function callTranscript(call: Omit<CallEnvelope, "sig">): Uint8Array {
   return cat(
     utf8("eXe/call\0"),
     lp(utf8(call.call_id)),
-    lp(utf8(call.issuer)),
+    lp(utf8(call.caller)),
     lp(utf8(call.device)),
     u64be(call.issued_at),
     u64be(call.expires_at),
@@ -400,7 +400,7 @@ export function signCall(seed: Uint8Array, call: CallEnvelope): string {
 }
 export function verifyCall(call: CallEnvelope): boolean {
   try {
-    return verifySignature(parseAddress(call.issuer), callTranscript(call), call.sig);
+    return verifySignature(parseAddress(call.caller), callTranscript(call), call.sig);
   } catch {
     return false;
   }
@@ -475,7 +475,7 @@ export function requestHeaders(identity: Identity, method: string, path: string)
 /** Issuer side: seal a command to a device address and sign the envelope. */
 export function buildCall(input: {
   seed: Uint8Array;
-  issuer: string;
+  caller: string;
   device: string;
   callId: string;
   name: string;
@@ -489,7 +489,7 @@ export function buildCall(input: {
 }): CallEnvelope {
   const sealed = seal({
     direction: "call",
-    issuer: input.issuer,
+    caller: input.caller,
     device: input.device,
     callId: input.callId,
     issuedAt: input.issuedAt,
@@ -503,7 +503,7 @@ export function buildCall(input: {
   });
   const call: CallEnvelope = {
     call_id: input.callId,
-    issuer: input.issuer,
+    caller: input.caller,
     device: input.device,
     issued_at: input.issuedAt,
     expires_at: input.expiresAt,
@@ -518,7 +518,7 @@ export function buildCall(input: {
 export function openCall(input: { seed: Uint8Array; call: CallEnvelope }): { name: string; args: string } {
   const plaintext = open({
     direction: "call",
-    issuer: input.call.issuer,
+    caller: input.call.caller,
     device: input.call.device,
     callId: input.call.call_id,
     issuedAt: input.call.issued_at,
@@ -531,7 +531,7 @@ export function openCall(input: { seed: Uint8Array; call: CallEnvelope }): { nam
   return { name: parsed.name, args: parsed.args };
 }
 
-/** Device side: seal the outcome to the issuer and sign the envelope. */
+/** Device side: seal the outcome to the caller and sign the envelope. */
 export function buildResult(input: {
   seed: Uint8Array;
   call: CallEnvelope;
@@ -545,13 +545,13 @@ export function buildResult(input: {
 }): ResultEnvelope {
   const sealed = seal({
     direction: "result",
-    issuer: input.call.issuer,
+    caller: input.call.caller,
     device: input.call.device,
     callId: input.call.call_id,
     issuedAt: input.issuedAt,
     // The result inherits the call's expiry: the reply cannot outlive the request.
     expiresAt: input.call.expires_at,
-    recipient: agreementPublic(parseAddress(input.call.issuer)),
+    recipient: agreementPublic(parseAddress(input.call.caller)),
     plaintext: input.plaintext,
     nonce: input.nonce,
     contentKey: input.contentKey,
@@ -577,13 +577,13 @@ export function buildResult(input: {
  */
 export function openAttachment(input: {
   seed: Uint8Array;
-  call: Pick<CallEnvelope, "call_id" | "issuer" | "device" | "expires_at">;
+  call: Pick<CallEnvelope, "call_id" | "caller" | "device" | "expires_at">;
   result: Pick<ResultEnvelope, "issued_at">;
   sealed: Uint8Array;
 }): string {
   return openBytes({
     direction: "blob",
-    issuer: input.call.issuer,
+    caller: input.call.caller,
     device: input.call.device,
     callId: input.call.call_id,
     issuedAt: input.result.issued_at,
@@ -596,12 +596,12 @@ export function openAttachment(input: {
 /** Issuer side: open the sealed answer, which only its own key can unwrap. */
 export function openResult(input: {
   seed: Uint8Array;
-  call: Pick<CallEnvelope, "call_id" | "issuer" | "device" | "expires_at">;
+  call: Pick<CallEnvelope, "call_id" | "caller" | "device" | "expires_at">;
   result: ResultEnvelope;
 }): string {
   return open({
     direction: "result",
-    issuer: input.call.issuer,
+    caller: input.call.caller,
     device: input.call.device,
     callId: input.call.call_id,
     issuedAt: input.result.issued_at,

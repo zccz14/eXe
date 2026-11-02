@@ -24,9 +24,9 @@ CREATE TABLE IF NOT EXISTS devices (
 );
 
 CREATE TABLE IF NOT EXISTS calls (
-  call_id        TEXT PRIMARY KEY,  -- chosen and signed by the console
+  call_id        TEXT PRIMARY KEY,  -- chosen and signed by the caller
   device_address TEXT NOT NULL,
-  issuer         TEXT NOT NULL,     -- the console's address, and therefore the owner
+  caller         TEXT NOT NULL,     -- the caller's address, and therefore the owner
   sealed         TEXT NOT NULL,     -- base64url; opaque to the relay
   sig            TEXT NOT NULL,
   issued_at      INTEGER NOT NULL,
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS calls (
 
 -- `peek` reads this one: the unacknowledged calls of a single device.
 CREATE INDEX IF NOT EXISTS calls_queued ON calls(device_address, status, created_at);
-CREATE INDEX IF NOT EXISTS calls_issuer ON calls(issuer, created_at DESC);
+CREATE INDEX IF NOT EXISTS calls_caller ON calls(caller, created_at DESC);
 CREATE INDEX IF NOT EXISTS calls_device_recent ON calls(device_address, created_at DESC);
 -- The retention cron sweeps settled calls by age; without this it would scan the
 -- whole table once an hour.

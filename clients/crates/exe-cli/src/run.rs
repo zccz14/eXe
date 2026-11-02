@@ -119,7 +119,7 @@ pub async fn run(config: Config) -> Result<()> {
         bail!("trust contains entries that are not eXe addresses: {bad_trust:?}");
     }
     if config.trust.is_empty() {
-        warn!("trust is empty: this device will refuse every call until `exe trust <address>` names an issuer");
+        warn!("trust is empty: this device will refuse every call until `exe trust <address>` names an caller");
     }
     let endpoints = config.endpoints();
     info!(

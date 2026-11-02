@@ -8,7 +8,7 @@
 
 ## 1. 身份
 
-> 术语：**调用方**是产生调用的一方（`calls.issuer`，线上标识符仍是 `issuer`）；
+> 术语：**调用方**是产生调用的一方，线上字段就叫 `caller`（表里是 `calls.caller`）；
 > **控制台**只是调用方的一个实现——`exe.ntnl.io` 上那个浏览器应用。
 > 另一台跑 `exe mcp` 的机器、一个自研 agent，都是同等资格的调用方。
 
@@ -92,7 +92,7 @@ trust     = ["<调用方地址>", …]      # 只接受这些调用方签发的�
 ```
 content_key = random(32)
 iv          = random(12)
-aad         = direction ‖ issuer ‖ device ‖ call_id ‖ issued_at ‖ expires_at
+aad         = direction ‖ caller ‖ device ‖ call_id ‖ issued_at ‖ expires_at
 body        = AES-256-GCM(content_key, iv, aad, plaintext)
 box         = crypto_box_easy(content_key, nonce24, recipient_x25519_pub)
             = tag16 ‖ ct32
@@ -105,7 +105,7 @@ sealed      = base64url( nonce24 ‖ eph_pub32 ‖ box ‖ iv12 ‖ body )
 - 正文用 AES-256-GCM：浏览器与 Rust 都有硬件加速，正文可以随便变大（截图、文件片段），
   曲线运算的成本固定在 32 字节。
 - `aad` 的每个字段按 **lp 编码**（`u32be(len) ‖ UTF-8`）拼接，时间戳是 `u64be`。
-  `direction` 是 `"call"`、`"result"` 或 `"blob"`；结果沿用**原调用**的 `issuer`/`device`/`call_id`/`expires_at`，
+  `direction` 是 `"call"`、`"result"` 或 `"blob"`；结果沿用**原调用**的 `caller`/`device`/`call_id`/`expires_at`，
   `issued_at` 用结果自己的时间。改任何一个字段，正文就打不开。
   装不进一行结果时，正文用 `"blob"` 方向另封一份、原样存进对象存储（R2），行里只留指针——
   方向不同，附件就永远不会被当成信封，也不会串到另一条调用上。
@@ -114,7 +114,7 @@ sealed      = base64url( nonce24 ‖ eph_pub32 ‖ box ‖ iv12 ‖ body )
 ## 4. 报文
 
 ```jsonc
-call   = { "call_id": "...", "issuer": "<base58>", "device": "<base58>",
+call   = { "call_id": "...", "caller": "<base58>", "device": "<base58>",
            "issued_at": 0, "expires_at": 0, "sealed": "<base64url>", "sig": "<base58>" }
 result = { "call_id": "...", "device": "<base58>", "ok": true, "issued_at": 0,
            "sealed": "<base64url>", "sig": "<base58>" }
@@ -124,11 +124,11 @@ result = { "call_id": "...", "device": "<base58>", "ok": true, "issued_at": 0,
   不是它的编码文本），按字段顺序做 lp 拼接，时间戳 `u64be`：
 
   ```
-  T_call    = "eXe/call\0"    ‖ lp(call_id) ‖ lp(issuer) ‖ lp(device) ‖ u64(issued_at) ‖ u64(expires_at) ‖ lp(sealed)
+  T_call    = "eXe/call\0"    ‖ lp(call_id) ‖ lp(caller) ‖ lp(device) ‖ u64(issued_at) ‖ u64(expires_at) ‖ lp(sealed)
   T_result  = "eXe/result\0"  ‖ lp(call_id) ‖ lp(device) ‖ u8(ok)      ‖ u64(issued_at) ‖ lp(sealed)
   ```
 
-  结果的 `device` 字段既是调用方又是验签公钥；调用则由 `issuer` 字段自证。
+  结果的 `device` 字段既是调用方又是验签公钥；调用则由 `caller` 字段自证。
 - 指令的 `sealed` 用**设备**的 X25519 公钥封；结果的 `sealed` 用**调用方**的 X25519 公钥封。
 - `ok` 在签名范围内：云端解不开正文，成败由设备签出来。
 - `issued_at` 落在 ±300 秒之外、或 `expires_at` 已过，设备一律丢弃；调用寿命上限 1 小时。
@@ -156,7 +156,7 @@ lost  = 它被一个已经不存在的进程接手过，结果未知
 设备收到一条调用时按顺序做四件事：
 
 ```
-验签（issuer 必须在 trust 里）→ 验时间窗 → 用本机密钥解封 → 执行
+验签（caller 必须在 trust 里）→ 验时间窗 → 用本机密钥解封 → 执行
 ```
 
 任何一步不过就丢弃，不回执、不执行。
@@ -164,7 +164,7 @@ lost  = 它被一个已经不存在的进程接手过，结果未知
 ## 5. 云端能看到什么
 
 ```
-call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态, blob_bytes
+call_id, caller, device, sealed(base64url), sig, issued_at, expires_at, 状态, blob_bytes
 设备登记：platform, version, trust(副本), run_id, 首次/最后活跃
 ```
 
@@ -198,7 +198,7 @@ call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态, 
 | POST | `/api/calls/{call_id}/cancel` | 请求取消 |
 
 调用方没有注册这一步：地址由它自己生成（控制台就是浏览器里那把），第一次请求就生效。归属由签名回答，
-`calls.issuer` 就是它的所有者，没有第二个 `user_id` 列。
+`calls.caller` 就是它的所有者，没有第二个 `user_id` 列。
 
 云端只为**已登记**、且 `trust` 里包含该调用方的地址排队。两道拒绝（设备不信任这个
 地址 / 信封签名不合法）回同一个响应：`does device D trust address X` 不是云端该回答的问题。

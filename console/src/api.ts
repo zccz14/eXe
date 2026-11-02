@@ -77,7 +77,7 @@ export interface DeviceStatus {
 export interface CallView {
   call_id: string;
   device: string;
-  issuer: string;
+  caller: string;
   status: "queued" | "received" | "succeeded" | "failed" | "cancelled" | "expired" | "lost";
   issued_at: number;
   expires_at: number;
