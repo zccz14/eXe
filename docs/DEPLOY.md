@@ -30,35 +30,29 @@ wrangler pages project create exe-console --production-branch main
 wrangler pages deploy console/dist --project-name=exe-console --branch=main
 ```
 
-把 `exe.ntnl.io` 指到 worker（Custom Domain 或 Route），并把
-`wrangler.jsonc` 的 `AUTH_AUDIENCE` 设为同一个 hostname —— AuthMini 的
-token audience 必须与它逐字一致。
+把 `exe.ntnl.io` 指到 worker（Custom Domain 或 Route）即可，没有第三方身份提供方
+需要配置。
 
 要求：
 
-- 云端**不需要任何账号私钥**，因此没有需要备份的密钥材料，也没有密钥恢复流程：
+- 云端**不需要任何密钥材料**，因此没有需要备份的密钥，也没有密钥恢复流程：
   丢了 worker、丢了数据库，也解不开任何一条历史结果；换了浏览器或重装了设备，
   就是换一把新地址，重新在两个方向填一次地址。
-- `AUTH_AUDIENCE` 支持逗号分隔的多个 audience；API 只认其中的任何一个，
-  建议保持单一 `exe.ntnl.io`。控制台额外向 AuthMini 申请的 audience
-  （默认 `exe.ntnl.io,linkit.ntnl.io`，供共享外壳的 Linkit 组件使用）
-  由构建期 `VITE_AUTH_AUDIENCES` 控制，不影响 API 授权。
-- 控制台构建期不需要写自己的域名：登录时它会把**当前 hostname**（也就是
-  AuthMini 的回调主机名）并进 `audiences`。AuthMini 强制要求 `audiences`
-  包含 `redirect_uri` 的主机名，缺了会直接把请求判成「登录请求无效」。
-  所以换 Pages 域名只改 `CONSOLE_ORIGINS`，不用动 `VITE_AUTH_AUDIENCES`。
-- 草稿期：结构变更一律「删表重建」。本次改动换了设备/调用的主键（地址与 `call_id`），
-  线上要执行：
+- 换控制台域名只改 `CONSOLE_ORIGINS`（CORS）。控制台自己不需要知道自己的域名：
+  它每次请求都用自己的密钥签名，与部署在哪个 hostname 无关。
+- 草稿期：结构变更一律「删表重建」。线上执行：
 
   ```sh
   wrangler d1 execute exe --remote --command \
     "DROP TABLE IF EXISTS calls; DROP TABLE IF EXISTS devices; DROP TABLE IF EXISTS agents; \
      DROP TABLE IF EXISTS accounts; DROP TABLE IF EXISTS account_challenges; \
-     DROP TABLE IF EXISTS request_nonces; DROP TABLE IF EXISTS pairings;"
+     DROP TABLE IF EXISTS request_nonces;"
   wrangler d1 execute exe --remote --file worker/src/schema.sql
   ```
 
-  旧数据不解密、不迁移：它属于旧线格式，密钥与报文都对不上。
+  旧数据不解密、不迁移：它属于旧线格式，密钥与报文都对不上。`accounts` /
+  `account_challenges` 是账号体系留下的表，删掉即可——控制台的归属现在由
+  `calls.issuer` 和 `devices.owner_address` 回答。
 
 ## 版本
 
@@ -112,7 +106,7 @@ wrangler dev                           # worker
 pnpm db:init:local                     # 本地 D1 建表
 ```
 
-本地没有 AuthMini 时，用测试替身跑完整链路（自签 JWKS + 真实 agent）：
+端到端链路不需要任何外部身份服务，两者都只跑本地 worker 与真实密钥：
 
 ```sh
 pnpm test:integration   # 纯 HTTP 协议链路

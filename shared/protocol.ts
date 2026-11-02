@@ -408,9 +408,11 @@ export function verifyResult(result: ResultEnvelope): boolean {
 // --- device request authentication ------------------------------------------
 
 /**
- * Every device request is self-signed: no bearer token exists. The relay keeps
- * the nonce until the timestamp falls out of the window, so a captured request
- * cannot be replayed.
+ * Every request is self-signed: no bearer token exists. `/v1/*` takes the address
+ * from the path and `/api/*` from `x-exe-address`, but both sign this same
+ * transcript, so neither can speak for an address it cannot sign for. The relay
+ * keeps the nonce until the timestamp falls out of the window, so a captured
+ * request cannot be replayed.
  */
 export interface RequestAuth {
   method: string;
@@ -443,49 +445,21 @@ export function verifyRequest(auth: RequestAuth, signature: string): boolean {
   }
 }
 
-// --- account registration ----------------------------------------------------
-
-export interface AccountFields {
-  address: string;
-  userId: string;
-  nonce: string;
-  issuedAt: number;
-}
-
-export function accountTranscript(fields: AccountFields): Uint8Array {
-  return cat(
-    utf8("eXe/account\0"),
-    lp(utf8(fields.address)),
-    lp(utf8(fields.userId)),
-    lp(utf8(fields.nonce)),
-    u64be(fields.issuedAt),
-  );
-}
-export function signAccount(seed: Uint8Array, fields: AccountFields): string {
-  return sign(seed, accountTranscript(fields));
-}
-
 /**
- * Wire shape of `PUT /api/account`. The access token already carries the user id,
- * so the body only proves the key: hence snake_case `issued_at` and no `userId`.
- * Keep this as the single source so the console and the tests cannot drift apart.
+ * One self-authenticating request. `/v1/*` reads the address from the path and
+ * `/api/*` from `x-exe-address`; both read the same `address` field, which the
+ * signature covers, so neither can name an address it cannot sign for.
  */
-export interface AccountPayload {
-  address: string;
-  nonce: string;
-  issued_at: number;
-  sig: string;
-}
-
-export function accountPayload(fields: AccountFields, signature: string): AccountPayload {
-  return { address: fields.address, nonce: fields.nonce, issued_at: fields.issuedAt, sig: signature };
-}
-export function verifyAccount(fields: AccountFields, signature: string): boolean {
-  try {
-    return verifySignature(parseAddress(fields.address), accountTranscript(fields), signature);
-  } catch {
-    return false;
-  }
+export function requestHeaders(identity: Identity, method: string, path: string): Record<string, string> {
+  const address = addressOf(identity);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const nonce = b64u(randomBytes(16));
+  return {
+    "x-exe-address": address,
+    "x-exe-timestamp": String(timestamp),
+    "x-exe-nonce": nonce,
+    "x-exe-signature": signRequest(identity.seed, { method, path, address, timestamp, nonce }),
+  };
 }
 
 // --- the four things a party actually does -----------------------------------

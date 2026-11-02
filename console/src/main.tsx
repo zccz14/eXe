@@ -1,32 +1,14 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import { HashRouter, Link, Navigate, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { AuthMiniProvider } from "auth-mini-react-components";
-import { LinkitProvider } from "linkit-react-components";
-import { AppLayout } from "@zccz14/ux";
-import { LanguagesIcon, MonitorIcon } from "lucide-react";
+import { LanguagesIcon } from "lucide-react";
 import "./styles.css";
-import { AccountProvider, holdsAccountKey, useAccount } from "./account";
 import { LanguageProvider, useCopy, useLang } from "./i18n";
 import { ExeMark } from "./mark";
 import { DevicePage } from "./pages/Device";
 import { DevicesPage } from "./pages/Devices";
 import { Button } from "./ui";
-
-// The shared shell renders Linkit widgets, so the console asks AuthMini for those
-// audiences too; the worker still only accepts tokens that carry its own audience.
-// AuthMini also requires the callback hostname itself, which is this page's origin:
-// without it the login page rejects the request outright.
-const AUDIENCES = [
-  ...new Set([
-    ...(import.meta.env.VITE_AUTH_AUDIENCES ?? "exe.ntnl.io,linkit.ntnl.io")
-      .split(",")
-      .map((value: string) => value.trim())
-      .filter(Boolean),
-    window.location.hostname,
-  ]),
-].sort();
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 0, refetchOnWindowFocus: false } } });
 
@@ -41,68 +23,44 @@ function LanguageSwitch() {
   );
 }
 
-function KeyBanner() {
-  const t = useCopy();
-  const { account, state, error } = useAccount();
-  const [holds, setHolds] = useState<boolean | null>(null);
-  useEffect(() => {
-    if (state === "ready" || state === "mismatch") void holdsAccountKey(account).then(setHolds);
-  }, [state, account]);
-  if (state === "error") return <div className="m-6 rounded-lg border border-destructive/40 p-4 text-sm text-destructive">{error}</div>;
-  if (state === "mismatch" || holds === false) {
-    return (
-      <div className="m-6 rounded-lg border border-amber-500/40 bg-amber-500/5 p-4 text-sm">
-        <div className="font-medium">{t("key_missing_title")}</div>
-        <p className="mt-1 text-muted-foreground">{t("key_missing_body")}</p>
-      </div>
-    );
-  }
-  return null;
-}
-
+/**
+ * There is nothing to log in to: this page is a static shell plus one key in this
+ * browser, so the header only carries the version and the language.
+ */
 function Shell() {
-  const t = useCopy();
   return (
-    <AppLayout
-      logo={<ExeMark />}
-      title="eXe"
-      nav={[
-        {
-          label: t("nav_devices"),
-          items: [{ to: "/devices", label: t("nav_devices"), icon: <MonitorIcon /> }],
-        },
-      ]}
-      headerSlot={
-        <div className="flex items-center gap-2">
+    <div className="flex min-h-screen flex-col">
+      <header className="sticky top-0 z-10 border-b border-border bg-background/85 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-5xl items-center gap-2 px-6 py-3">
+          <Link to="/devices" className="flex items-center gap-2">
+            <ExeMark />
+            <span className="text-base font-semibold">eXe</span>
+          </Link>
           <span className="text-xs text-muted-foreground">v{__APP_VERSION__}</span>
-          <LanguageSwitch />
+          <div className="ml-auto">
+            <LanguageSwitch />
+          </div>
         </div>
-      }
-    >
-      <KeyBanner />
-      <Routes>
-        <Route path="/devices" element={<DevicesPage />} />
-        <Route path="/devices/:address" element={<DevicePage />} />
-        <Route path="*" element={<Navigate replace to="/devices" />} />
-      </Routes>
-    </AppLayout>
+      </header>
+      <main className="flex-1">
+        <Routes>
+          <Route path="/devices" element={<DevicesPage />} />
+          <Route path="/devices/:address" element={<DevicePage />} />
+          <Route path="*" element={<Navigate replace to="/devices" />} />
+        </Routes>
+      </main>
+    </div>
   );
 }
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <AuthMiniProvider authMiniBaseUrl="https://auth.ntnl.io" audiences={AUDIENCES} autoRedirectToLogin>
-      <LinkitProvider linkitBaseUrl="https://linkit.ntnl.io" lang="zh-CN">
-        <QueryClientProvider client={queryClient}>
-          <LanguageProvider>
-            <AccountProvider>
-              <HashRouter>
-                <Shell />
-              </HashRouter>
-            </AccountProvider>
-          </LanguageProvider>
-        </QueryClientProvider>
-      </LinkitProvider>
-    </AuthMiniProvider>
+    <QueryClientProvider client={queryClient}>
+      <LanguageProvider>
+        <HashRouter>
+          <Shell />
+        </HashRouter>
+      </LanguageProvider>
+    </QueryClientProvider>
   </StrictMode>,
 );

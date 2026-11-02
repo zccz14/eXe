@@ -1,10 +1,8 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useAuthMini } from "auth-mini-react-components";
 import { ArrowLeftIcon, PlayIcon, ShieldAlertIcon, SquareIcon, Trash2Icon } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { api, type CallDetail, type CallView, type DeviceView } from "../api";
-import { useAccount } from "../account";
 import { localCalls, newCallId, openSealed, sealDeviceCall } from "../keystore";
 import { statusCopy, useCopy } from "../i18n";
 import { Badge, Button, Card, Input, Stat } from "../ui";
@@ -28,8 +26,6 @@ function statusTone(status: CallView["status"]): "muted" | "ok" | "warn" | "bad"
 export function DevicePage() {
   const t = useCopy();
   const { address = "" } = useParams();
-  const { sdk } = useAuthMini();
-  const { state: keyState } = useAccount();
   const queryClient = useQueryClient();
   const [tool, setTool] = useState<ToolName>("echo");
   const [argsText, setArgsText] = useState<string>('{"text":"hello eXe"}');
@@ -38,14 +34,14 @@ export function DevicePage() {
 
   const devices = useQuery({
     queryKey: ["devices"],
-    queryFn: () => api<{ devices: DeviceView[] }>(sdk as never, "/api/devices"),
+    queryFn: () => api<{ devices: DeviceView[] }>("/api/devices"),
     refetchInterval: 5000,
   });
   const device = devices.data?.devices.find((item) => item.address === address);
 
   const calls = useQuery({
     queryKey: ["calls", address],
-    queryFn: () => api<{ calls: CallView[] }>(sdk as never, `/api/calls?device=${address}&limit=50`),
+    queryFn: () => api<{ calls: CallView[] }>(`/api/calls?device=${address}&limit=50`),
     refetchInterval: 2000,
   });
 
@@ -53,7 +49,7 @@ export function DevicePage() {
   const [local, setLocal] = useState<Record<string, { name: string; args: string }>>({});
   const detail = useQuery({
     queryKey: ["call", openCall],
-    queryFn: () => api<CallDetail>(sdk as never, `/api/calls/${openCall}`),
+    queryFn: () => api<CallDetail>(`/api/calls/${openCall}`),
     enabled: Boolean(openCall),
     refetchInterval: (query) => (query.state.data?.call.has_result ? false : 2000),
   });
@@ -80,7 +76,6 @@ export function DevicePage() {
 
   const send = useMutation({
     mutationFn: async () => {
-      if (keyState !== "ready") throw new Error(t("account_missing"));
       let parsed: unknown;
       try {
         parsed = JSON.parse(argsText);
@@ -94,7 +89,7 @@ export function DevicePage() {
         name: tool,
         args: JSON.stringify(parsed),
       });
-      return api<{ call: CallView }>(sdk as never, `/api/devices/${address}/calls`, {
+      return api<{ call: CallView }>(`/api/devices/${address}/calls`, {
         method: "POST",
         body: JSON.stringify(call),
       });
@@ -108,12 +103,12 @@ export function DevicePage() {
   });
 
   const cancel = useMutation({
-    mutationFn: (callId: string) => api<void>(sdk as never, `/api/calls/${callId}/cancel`, { method: "POST" }),
+    mutationFn: (callId: string) => api<void>(`/api/calls/${callId}/cancel`, { method: "POST" }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["calls", address] }),
   });
 
   const remove = useMutation({
-    mutationFn: () => api<void>(sdk as never, `/api/devices/${address}`, { method: "DELETE" }),
+    mutationFn: () => api<void>(`/api/devices/${address}`, { method: "DELETE" }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["devices"] }),
   });
 
@@ -122,7 +117,7 @@ export function DevicePage() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 p-6">
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 p-6">
       <Link to="/devices" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
         <ArrowLeftIcon className="size-4" />
         {t("devices_title")}
@@ -138,13 +133,7 @@ export function DevicePage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {device.revoked_at ? (
-              <Badge tone="bad">{t("revoked")}</Badge>
-            ) : device.online ? (
-              <Badge tone="ok">{t("online")}</Badge>
-            ) : (
-              <Badge tone="muted">{t("offline")}</Badge>
-            )}
+            {device.online ? <Badge tone="ok">{t("online")}</Badge> : <Badge tone="muted">{t("offline")}</Badge>}
             <Button variant="outline" onClick={() => remove.mutate()} disabled={remove.isPending}>
               <Trash2Icon className="size-4" />
               {t("remove_device")}
@@ -179,7 +168,7 @@ export function DevicePage() {
             <ShieldAlertIcon className="size-3.5" />
             {t("policy_note")}
           </p>
-          <Button onClick={() => send.mutate()} disabled={send.isPending || device.revoked_at !== null || keyState !== "ready"}>
+          <Button onClick={() => send.mutate()} disabled={send.isPending}>
             <PlayIcon className="size-4" />
             {t("run")}
           </Button>

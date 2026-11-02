@@ -1,23 +1,22 @@
-// The browser is the only place the account key exists. It signs calls and opens
-// results; the relay only ever sees the address and sealed envelopes.
+// The browser is the only place this console's key exists. It signs requests and
+// calls, and opens results; the relay only ever sees the address and the sealed
+// envelopes. Clearing site data or switching browsers mints a new identity.
 import {
-  accountPayload,
   addressOf,
   buildCall,
   decodeSecret,
   encodeSecret,
   newIdentity,
   openResult,
-  signAccount,
-  type AccountFields,
-  type AccountPayload,
   type CallEnvelope,
   type Identity,
   type ResultEnvelope,
 } from "../../shared/protocol.ts";
 
-const DB_NAME = "exe-keys";
-const STORE = "account";
+// A fresh database: the store that held an "account" key belongs to a model that
+// no longer exists, and its key has nothing left to sign for.
+const DB_NAME = "exe-console";
+const STORE = "console";
 const RECORD = "self";
 
 interface StoredRecord {
@@ -117,13 +116,6 @@ export async function forgetLocalKeys(): Promise<void> {
     request.onerror = () => reject(request.error);
   });
   cached = null;
-}
-
-/** Signs the registration the relay will store; the body is already wire-shaped. */
-export async function signRegistration(userId: string, nonce: string, issuedAt: number): Promise<AccountPayload> {
-  const identity = await localIdentity();
-  const fields: AccountFields = { address: addressOf(identity), userId, nonce, issuedAt };
-  return accountPayload(fields, signAccount(identity.seed, fields));
 }
 
 /** Seals the command to the device address and signs the envelope. */

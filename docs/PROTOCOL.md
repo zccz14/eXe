@@ -8,7 +8,10 @@
 
 ## 1. 身份
 
-每个端（人 / Agent / 设备）只有一对 Ed25519 密钥。**公钥就是地址**。
+每一方（控制台 / Agent / 设备）只有一对 Ed25519 密钥。**公钥就是地址**。
+
+没有账号，没有登录，也就没有身份提供方：控制台的身份就是它浏览器里那把钥匙，
+云端的每一行归属都由「谁签的」回答，而不是由某个 `user_id` 回答。
 
 | 东西 | 编码 | 形态 |
 |---|---|---|
@@ -17,7 +20,7 @@
 | 签名 | `base58(sig64)` | |
 | 密文（`sealed`） | `base64url`（无 padding） | 一个字段装下 nonce/临时公钥/包裹密钥/正文 |
 
-密钥与签名用 base58（短、要与 Solana/AuthMini 互通）；密文用 base64url —— base58 的
+密钥与签名用 base58（短、与 Solana 密钥文件互通）；密文用 base64url —— base58 的
 字符表对长数据是净损失（体积多 ~3%，编解码走大数运算），不拿它装正文。
 
 加载私钥时校验后 32 字节等于由 `seed` 推出的公钥，不一致立即拒绝。
@@ -28,7 +31,7 @@ x25519_pub  = edwardsToMontgomery(ed25519_pub)
 x25519_priv = clamp(sha512(seed)[0..32])
 ```
 
-同一把密钥可以在 eXe、AuthMini 设备身份（`auth-mini/sdk/device`）、Solana 密钥文件之间直接复用。
+同一把密钥可以在 eXe 与 Solana 密钥文件之间直接复用。
 
 ## 2. 信任
 
@@ -44,13 +47,17 @@ label   = "mac-mini"
 - `secret` 是设备唯一的身份材料，第一次运行 `exe run` 时本机生成，从不外传；
   `exe trust <地址>` 编辑信任列表，重启后生效。
 - 设备启动时用自己的密钥向云端**自登记**：一次自签请求，云端只记地址与在线状态。
-- 设备的**每一次**请求都自签，没有 bearer 令牌：
+- **每一方的每一次**请求都自签，没有 bearer 令牌，也没有登录：
 
   ```
   x-exe-timestamp: <unix 秒>
   x-exe-nonce:     <base64url 16 字节随机数，一次性>
-  x-exe-signature: base58(Ed25519(设备私钥, T_request))
+  x-exe-signature: base58(Ed25519(本端私钥, T_request))
+  x-exe-address:   <base58 地址>      # 仅 /api/*；/v1/* 从路径取地址
   ```
+
+  签名覆盖的 `address` 只有一个：`/v1/agents/{address}` 从路径取，`/api/*` 从
+  `x-exe-address` 取。因此请求无法声称一个它签不出来的地址。
 
   云端拒绝时间窗（±300 秒）之外的请求，并把 `(address, nonce)` 落库去重：
   被截获的请求在 nonce 用掉之后再也重放不了。
@@ -98,15 +105,12 @@ result = { "call_id": "...", "device": "<base58>", "ok": true, "issued_at": 0,
   ```
   T_call    = "eXe/call\0"    ‖ lp(call_id) ‖ lp(issuer) ‖ lp(device) ‖ u64(issued_at) ‖ u64(expires_at) ‖ lp(sealed)
   T_result  = "eXe/result\0"  ‖ lp(call_id) ‖ lp(device) ‖ u8(ok)      ‖ u64(issued_at) ‖ lp(sealed)
-  T_account = "eXe/account\0" ‖ lp(address) ‖ lp(user_id) ‖ lp(nonce)  ‖ u64(issued_at)
   ```
 
   结果的 `device` 字段既是签发者又是验签公钥；调用则由 `issuer` 字段自证。
 - 指令的 `sealed` 用**设备**的 X25519 公钥封；结果的 `sealed` 用**签发者**的 X25519 公钥封。
 - `ok` 在签名范围内：云端解不开正文，成败由设备签出来。
 - `issued_at` 落在 ±300 秒之外、或 `expires_at` 已过，设备一律丢弃；调用寿命上限 1 小时。
-- `T_account` 只用于控制台登记浏览器地址：它证明浏览器持有该地址，
-  「这个人是谁」由 AuthMini JWT 回答，所以 `user_id` 取自 JWT，不在报文里重复。
 
 投递是**至少一次**的：回执丢失时云端会重投同一个 `call_id`。设备因此必须幂等——
 进程内保留 `call_id → 结果信封`，重投时直接回结果，不重复执行。
@@ -139,13 +143,11 @@ call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
 | POST | `/v1/agents/{address}/calls/{call_id}/received` | 收到 |
 | POST | `/v1/agents/{address}/calls/{call_id}/result` | 回传密封结果 |
 
-控制台（AuthMini JWT）：
+控制台（同样是每次请求自签，见 §2；地址在 `x-exe-address`）：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/me` | 账号状态 `{ account_id, registered, address, custody }` |
-| GET | `/api/account/challenge` | 注册挑战 `{ nonce }`（5 分钟、单次） |
-| PUT | `/api/account` | 登记浏览器地址，body `{ address, nonce, issued_at, sig }` |
+| GET | `/api/me` | 云端认得的地址 `{ address, custody }` |
 | POST | `/api/devices` | 添加设备 `{ address }` |
 | GET | `/api/devices` | 列表（地址、在线、主机信息） |
 | DELETE | `/api/devices/{address}` | 移除（同时把未结的调用标记为取消） |
@@ -153,10 +155,11 @@ call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
 | GET | `/api/calls?device={address}` · `/api/calls/{call_id}` | 状态与信封（浏览器自行解封） |
 | POST | `/api/calls/{call_id}/cancel` | 请求取消 |
 
-注册 body 是**线格式**：`issued_at` 是数字、字段名是 snake_case，`user_id` 不出现
-（JWT 里已经有了）。`address` 与 `user_id` 一起进入 `T_account`，签名才成立。
+控制台没有注册这一步：地址由浏览器自己生成，第一次请求就生效。云端为每个地址
+保留它自己的地址簿与调用记录——归属由签名回答，`calls.issuer` 就是它的所有者，
+没有第二个 `user_id` 列。
 
-云端只为**已添加**的地址排队；设备的自登记与它是否被某个账号添加无关。
+云端只为**已添加**的地址排队；设备的自登记与它是否被某个控制台添加无关。
 
 ## 7. 执行限额
 

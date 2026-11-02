@@ -1,6 +1,5 @@
-import { requireUser } from "./auth.ts";
 import * as consoleApi from "./console.ts";
-import type { Env } from "./db.ts";
+import { authenticateConsole, type Env } from "./db.ts";
 import * as device from "./device.ts";
 import * as releases from "./releases.ts";
 import { ApiError, failure, json } from "./http.ts";
@@ -18,7 +17,7 @@ function corsHeaders(request: Request, env: Env): Headers | null {
   const headers = new Headers({
     "access-control-allow-origin": origin,
     vary: "origin",
-    "access-control-allow-headers": "authorization, content-type",
+    "access-control-allow-headers": "content-type, x-exe-address, x-exe-timestamp, x-exe-nonce, x-exe-signature",
     "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
     "access-control-max-age": "86400",
   });
@@ -66,24 +65,22 @@ export default {
       }
       if (path.startsWith("/v1/")) throw new ApiError(404, "unknown device endpoint");
 
-      // --- console: AuthMini JWT ---------------------------------------------
+      // --- console: the same self-signature, address in a header ----------------
       if (path.startsWith("/api/")) {
-        const userId = await requireUser(request, env);
+        const address = await authenticateConsole(request, env);
         const answer = async (): Promise<Response> => {
-          if (path === "/api/me" && method === "GET") return await consoleApi.me(env, userId);
-          if (path === "/api/account/challenge" && method === "GET") return await consoleApi.challenge(env, userId);
-          if (path === "/api/account" && method === "PUT") return await consoleApi.registerAccount(env, userId, request);
-          if (path === "/api/devices" && method === "GET") return await consoleApi.listDevices(env, userId);
-          if (path === "/api/devices" && method === "POST") return await consoleApi.addDevice(env, userId, request);
-          if (path === "/api/calls" && method === "GET") return await consoleApi.listCalls(env, userId, url);
+          if (path === "/api/me" && method === "GET") return await consoleApi.me(address);
+          if (path === "/api/devices" && method === "GET") return await consoleApi.listDevices(env, address);
+          if (path === "/api/devices" && method === "POST") return await consoleApi.addDevice(env, address, request);
+          if (path === "/api/calls" && method === "GET") return await consoleApi.listCalls(env, address, url);
           const match = path.match(new RegExp(`^/api/devices/${ADDRESS}$`));
-          if (match && method === "DELETE") return await consoleApi.removeDevice(env, userId, match[1]!);
+          if (match && method === "DELETE") return await consoleApi.removeDevice(env, address, match[1]!);
           const deviceCalls = path.match(new RegExp(`^/api/devices/${ADDRESS}/calls$`));
-          if (deviceCalls && method === "POST") return await consoleApi.createCall(env, userId, deviceCalls[1]!, request);
+          if (deviceCalls && method === "POST") return await consoleApi.createCall(env, address, deviceCalls[1]!, request);
           const readCall = path.match(new RegExp(`^/api/calls/${CALL_ID}$`));
-          if (readCall && method === "GET") return await consoleApi.readCall(env, userId, readCall[1]!);
+          if (readCall && method === "GET") return await consoleApi.readCall(env, address, readCall[1]!);
           const cancel = path.match(new RegExp(`^/api/calls/${CALL_ID}/cancel$`));
-          if (cancel && method === "POST") return await consoleApi.cancelCall(env, userId, cancel[1]!);
+          if (cancel && method === "POST") return await consoleApi.cancelCall(env, address, cancel[1]!);
           throw new ApiError(404, "unknown console endpoint");
         };
         return withCors(request, env, await answer());
