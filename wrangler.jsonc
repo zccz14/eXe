@@ -9,7 +9,9 @@
     "not_found_handling": "single-page-application",
     // `/__scheduled` is dev-only: it lets `wrangler dev --test-scheduled` fire the
     // retention cron locally. In production the worker falls through to the SPA.
-    "run_worker_first": ["/api/*", "/v1/*", "/download/*", "/__scheduled"]
+    // The installer paths are the worker's, not the SPA's: without them the
+    // catch-all page answers `curl .../install.sh` with HTML.
+    "run_worker_first": ["/api/*", "/v1/*", "/download/*", "/install.sh", "/install.ps1", "/__scheduled"]
   },
   "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "exe-blobs" }],
   "d1_databases": [
