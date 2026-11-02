@@ -45,14 +45,6 @@ jobs:
             echo "::warning::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are not set; skipping deployment"
           fi
 
-      - name: Apply the database schema
-        if: steps.credentials.outputs.ready == 'true'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: d1 execute exe --remote --file worker/src/schema.sql
-
       # The draft protocol keeps no compatibility layer: the column is renamed
       # in place, once. Fresh databases already have `caller`, and the rename
       # then fails harmlessly.
@@ -64,6 +56,14 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: d1 execute exe --remote --command "ALTER TABLE calls RENAME COLUMN issuer TO caller"
         continue-on-error: true
+
+      - name: Apply the database schema
+        if: steps.credentials.outputs.ready == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: d1 execute exe --remote --file worker/src/schema.sql
 
       - name: Deploy the worker
         if: steps.credentials.outputs.ready == 'true'
