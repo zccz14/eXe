@@ -52,14 +52,25 @@ curl -fsSL "$url.sha256" -o "$tmp/$asset.sha256" \
 
 tar -xzf "$tmp/$asset" -C "$tmp" exe || die "cannot unpack $asset"
 mkdir -p "$dir"
-cp "$tmp/exe" "$dir/exe"
-chmod 0755 "$dir/exe"
+# Never overwrite the binary in place. macOS kills a process whose mapped pages
+# were rewritten under it, and afterwards refuses to exec that file at all —
+# which is what an upgrade looks like when the device service is running.
+cp "$tmp/exe" "$dir/.exe.new.$$"
+chmod 0755 "$dir/.exe.new.$$"
+mv -f "$dir/.exe.new.$$" "$dir/exe"
 
 say "installed $dir/exe ($("$dir/exe" version 2>/dev/null || echo unknown))"
 case ":$PATH:" in
   *":$dir:"*) ;;
   *) say "add $dir to PATH:  export PATH=\"$dir:\$PATH\"" ;;
 esac
+
+# An existing install keeps running the old inode until it is restarted: say so
+# rather than let someone believe the upgrade took effect.
+config="${EXE_CONFIG_DIR:-$HOME/.config/exe}"
+if [ -f "$config/config.toml" ]; then
+  say "already set up here — run \`exe\` to restart the service on the new binary"
+fi
 
 cat <<'DONE'
 
