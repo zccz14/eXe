@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "exe"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "exe-core",
@@ -364,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "exe-core"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "exe-mobile"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "exe",
  "jni",

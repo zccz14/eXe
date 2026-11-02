@@ -38,7 +38,14 @@ try {
 
   Expand-Archive -Path $zip -DestinationPath $tmp -Force
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
-  Copy-Item (Join-Path $tmp "exe.exe") (Join-Path $dir "exe.exe") -Force
+  # Windows locks a running executable, so an upgrade fails here unless the task
+  # is stopped first — say that instead of throwing a sharing violation.
+  try {
+    Copy-Item (Join-Path $tmp "exe.exe") (Join-Path $dir ".exe.new.exe") -Force
+    Move-Item -Force (Join-Path $dir ".exe.new.exe") (Join-Path $dir "exe.exe")
+  } catch {
+    throw "cannot replace $dir\exe.exe: it is running. Stop it first: schtasks /End /TN exe"
+  }
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
