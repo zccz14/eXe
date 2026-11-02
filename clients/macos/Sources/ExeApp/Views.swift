@@ -53,6 +53,14 @@ struct DeviceView: View {
                         Button("停用系统服务") { store.stopSystemService() }
                             .help("如果地址正被 launchd 服务占着，点这个把地址交回 App 托管")
                         Spacer()
+                        if supervisor.needsHandover {
+                            Button("从系统服务接手") {
+                                store.stopSystemService()
+                                supervisor.clearHandover()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { supervisor.restart() }
+                            }
+                            .help("地址现在由 launchd 服务占着，点这里交给 App 托管")
+                        }
                         if store.device?.trust.isEmpty ?? true {
                             Text("还没有信任任何调用方：一切调用都会被拒绝")
                                 .font(.footnote).foregroundStyle(.orange)

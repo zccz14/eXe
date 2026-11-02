@@ -15,6 +15,9 @@ final class DeviceSupervisor: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var lines: [String] = []
     @Published private(set) var lastExit: String?
+    /// The address is held by something else (normally the launchd service). No
+    /// amount of retrying fixes that — the user has to hand it over.
+    @Published private(set) var needsHandover = false
 
     private var process: Process?
     private var stopping = false
@@ -63,6 +66,11 @@ final class DeviceSupervisor: ObservableObject {
         process?.terminate()
     }
 
+    func clearHandover() {
+        needsHandover = false
+        restarts = 0
+    }
+
     func restart() {
         guard isRunning else {
             start()
@@ -81,7 +89,7 @@ final class DeviceSupervisor: ObservableObject {
             isRunning = false
             lastExit = "退出码 \(code)"
             append("exited with \(code)")
-            guard !stopping else { return }
+            guard !stopping, !needsHandover else { return }
             // A crash loop should not hammer the relay: back off, then come back.
             restarts += 1
             let delay = min(Double(restarts) * 2, 20)
@@ -98,6 +106,7 @@ final class DeviceSupervisor: ObservableObject {
             let stamp = ISO8601DateFormatter().string(from: Date())
             let incoming = text.split(separator: "\n").map { "\(stamp) \($0)" }
             lines.append(contentsOf: incoming)
+            if text.contains("already owns this address") { needsHandover = true }
             if lines.count > 500 { lines.removeFirst(lines.count - 500) }
         if !FileManager.default.fileExists(atPath: Paths.appLog.path) {
             FileManager.default.createFile(atPath: Paths.appLog.path, contents: nil)
