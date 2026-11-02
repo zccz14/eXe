@@ -328,7 +328,7 @@ mod tests {
         assert!(call.open(&issuer).is_err(), "another key cannot open it");
 
         let wire = serde_json::to_string(&call).unwrap();
-        assert!(!wire.contains("echo"), "no tool name on the wire");
+        assert!(!wire.contains("shell"), "no tool name on the wire");
     }
 
     #[test]

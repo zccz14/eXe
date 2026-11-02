@@ -185,20 +185,20 @@ async function run() {
   await nextEvent("hello");
 
   // --- a signed call the device alone can open ----------------------------
-  const created = await browser.call(base, deviceAddress, "echo", { text: "hello eXe" });
+  const created = await browser.call(base, deviceAddress, "shell", { command: "uname -a" });
   const callId = created.call.call_id;
   const delivered = await nextEvent("call");
   assert.equal(delivered.call_id, callId);
   assert.ok(verifyCall(delivered), "the device can verify the issuer signature");
   const opened = openCall({ seed: device.seed, call: delivered });
-  assert.equal(opened.name, "echo");
-  assert.deepEqual(JSON.parse(opened.args), { text: "hello eXe" });
+  assert.equal(opened.name, "shell");
+  assert.deepEqual(JSON.parse(opened.args), { command: "uname -a" });
   const wire = JSON.stringify(delivered);
-  assert.equal(wire.includes("echo"), false, "the wire carries no tool name");
-  assert.equal(wire.includes("hello eXe"), false, "nor the arguments");
+  assert.equal(wire.includes("shell"), false, "the wire carries no tool name");
+  assert.equal(wire.includes("uname -a"), false, "nor the arguments");
 
   // Editing the sealed body after signing is refused before it is queued.
-  const forged = browser.signCall(deviceAddress, "echo", { text: "honest" });
+  const forged = browser.signCall(deviceAddress, "shell", { command: "printf honest" });
   forged.sealed = b64u(new Uint8Array(160));
   const tampered = await fetch(`${base}/api/devices/${deviceAddress}/calls`, {
     method: "POST",
@@ -210,7 +210,7 @@ async function run() {
   const unsignedCall = await fetch(`${base}/api/devices/${deviceAddress}/calls`, {
     method: "POST",
     headers: { ...signedHeaders(browser.identity, "POST", `/api/devices/${deviceAddress}/calls`), "content-type": "application/json" },
-    body: JSON.stringify({ name: "echo", args: "{}" }),
+    body: JSON.stringify({ name: "shell", args: "{}" }),
   });
   assert.equal(unsignedCall.status, 400);
 
@@ -218,7 +218,7 @@ async function run() {
   // but does not decide trust. What stops it is the device's trust list.
   const stranger = makeBrowser();
   await stranger.addDevice(base, deviceAddress, "not mine");
-  const strangerCall = stranger.signCall(deviceAddress, "echo", { text: "from a stranger" });
+  const strangerCall = stranger.signCall(deviceAddress, "shell", { command: "printf stranger" });
   assert.ok(verifyCall(strangerCall), "the stranger's envelope is well formed");
   const strangerQueued = await fetch(`${base}/api/devices/${deviceAddress}/calls`, {
     method: "POST",
@@ -246,7 +246,7 @@ async function run() {
   });
   assert.equal(forgedResult.status, 403, "the relay refuses a result the device did not sign");
 
-  const plaintext = JSON.stringify({ ok: true, output: { tool: "echo", text: "SEALED-MARKER-42" } });
+  const plaintext = JSON.stringify({ ok: true, output: { tool: "shell", stdout: "SEALED-MARKER-42" } });
   const result = buildResult({ seed: device.seed, call: delivered, ok: true, plaintext, issuedAt: now() });
   const posted = await fetch(`${base}${resultPath}`, {
     method: "POST",
@@ -292,7 +292,7 @@ async function run() {
   const idle = newIdentity();
   const idleAddress = addressOf(idle);
   await browser.addDevice(base, idleAddress, "idle");
-  const pending = await browser.call(base, idleAddress, "sleep", { seconds: 5 });
+  const pending = await browser.call(base, idleAddress, "shell", { command: "sleep 5" });
   const cancelled = await browser.request(base, "POST", `/api/calls/${pending.call.call_id}/cancel`);
   assert.equal(cancelled, null);
   const cancelledView = await browser.request(base, "GET", `/api/calls/${pending.call.call_id}`);
@@ -303,7 +303,7 @@ async function run() {
   const blocked = await fetch(`${base}/api/devices/${idleAddress}/calls`, {
     method: "POST",
     headers: { ...signedHeaders(browser.identity, "POST", `/api/devices/${idleAddress}/calls`), "content-type": "application/json" },
-    body: JSON.stringify(browser.signCall(idleAddress, "echo", {})),
+    body: JSON.stringify(browser.signCall(idleAddress, "shell", { command: "true" })),
   });
   assert.equal(blocked.status, 404);
 

@@ -12,10 +12,10 @@
     "device": "GyGKxMyg1p9SsHfm15MkNUu1u9TN2JtTspcdmrtGUdse",
     "issued_at": 1700000000,
     "expires_at": 1700000300,
-    "plaintext": "{\"name\":\"echo\",\"args\":\"{\\\"text\\\":\\\"hello eXe\\\"}\"}",
-    "sealed": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJ9bLW5g-Ud-MQwpgtqqbJE2wQihd3xZR-RI-jfWgXRVfJ__pIJkqGI-grnqUAlLrBGSqvtX34u7u5PzgsZFUUMydY6Zl0iiUif3voz-DTZnMICAgICAgICAgICAhHYjD_ml7Ex_xbFxWTV-Sk1nQgj4__c-G-AzKcBYAApoMQaMD5WHWsg4V1-vFQ9s-W1P_uTsxicbPLls-gh86PYw",
-    "transcript_sha256": "dfac4b597d640d5fac85e99f5c95545be2afae5eb457bda28190dd235a7724e1",
-    "sig": "2sQXfPihZ7WHS3ZNHf8SFdMPUcMEvYKBiW6KQkF6g7jsnEGFv9bofCMJE6w1e8o9tyHc8aaVscTjjch4dD1nCHdN"
+    "plaintext": "{\"name\":\"shell\",\"args\":\"{\\\"command\\\":\\\"uname -a\\\"}\"}",
+    "sealed": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJ9bLW5g-Ud-MQwpgtqqbJE2wQihd3xZR-RI-jfWgXRVfJ__pIJkqGI-grnqUAlLrBGSqvtX34u7u5PzgsZFUUMydY6Zl0iiUif3voz-DTZnMICAgICAgICAgICAhHYjD_ml7Ex_xNHBiQGeqqlWc1m97na7iZfWSaEpkx5dcoFoqmaDu2zYFA-o1f6rHJ-ZdbffJjNcy8xEYm8AEZhy1fig",
+    "transcript_sha256": "3ad3e720fbc4467f715ab1a78464994a60cf3983b159fbdc570e2fbee1743d52",
+    "sig": "R9RvaxboioJyvaJGLSRP2G4qNm8jxQduRZ2XSG5LgyZv7wDjpPBY1UbhJ7zadm94Dx1HN9pPPST19J4eKj3RAWB"
   },
   "result": {
     "call_id": "11111111-1111-4111-8111-111111111111",
