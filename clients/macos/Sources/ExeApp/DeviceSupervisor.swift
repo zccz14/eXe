@@ -6,7 +6,9 @@ import Foundation
 /// stably-signed app can hold them across upgrades while an ad-hoc CLI cannot.
 /// It also means the permission window tells the truth — what it reports is what
 /// the process running the commands actually has.
-@MainActor
+/// Not actor-isolated on purpose: the pipe and termination handlers run on other
+/// threads, and every published change is funnelled through the main queue here
+/// rather than by sprinkling `Task { @MainActor in … }` over the callbacks.
 final class DeviceSupervisor: ObservableObject {
     static let shared = DeviceSupervisor()
 
@@ -37,14 +39,14 @@ final class DeviceSupervisor: ObservableObject {
         let pipe = Pipe()
         child.standardOutput = pipe
         child.standardError = pipe
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        let supervisor = self
+        pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
-            Task { @MainActor in self?.append(text) }
+            supervisor.append(text)
         }
-        child.terminationHandler = { [weak self] finished in
-            let code = finished.terminationStatus
-            Task { @MainActor in self?.exited(code: code) }
+        child.terminationHandler = { finished in
+            supervisor.exited(code: finished.terminationStatus)
         }
         do {
             try child.run()
@@ -74,34 +76,38 @@ final class DeviceSupervisor: ObservableObject {
     }
 
     private func exited(code: Int32) {
-        process = nil
-        isRunning = false
-        lastExit = "退出码 \(code)"
-        append("exited with \(code)")
-        guard !stopping else { return }
-        // A crash loop should not hammer the relay: back off, then come back.
-        restarts += 1
-        let delay = min(Double(restarts) * 2, 20)
-        append("unexpected exit; restarting in \(Int(delay))s")
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, !self.isRunning, !self.stopping else { return }
-            self.start()
+        DispatchQueue.main.async { [self] in
+            process = nil
+            isRunning = false
+            lastExit = "退出码 \(code)"
+            append("exited with \(code)")
+            guard !stopping else { return }
+            // A crash loop should not hammer the relay: back off, then come back.
+            restarts += 1
+            let delay = min(Double(restarts) * 2, 20)
+            append("unexpected exit; restarting in \(Int(delay))s")
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, !self.isRunning, !self.stopping else { return }
+                self.start()
+            }
         }
     }
 
     private func append(_ text: String) {
-        let stamp = ISO8601DateFormatter().string(from: Date())
-        let incoming = text.split(separator: "\n").map { "\(stamp) \($0)" }
-        lines.append(contentsOf: incoming)
-        if lines.count > 500 { lines.removeFirst(lines.count - 500) }
+        DispatchQueue.main.async { [self] in
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            let incoming = text.split(separator: "\n").map { "\(stamp) \($0)" }
+            lines.append(contentsOf: incoming)
+            if lines.count > 500 { lines.removeFirst(lines.count - 500) }
         if !FileManager.default.fileExists(atPath: Paths.appLog.path) {
             FileManager.default.createFile(atPath: Paths.appLog.path, contents: nil)
         }
-        if let data = (incoming.joined(separator: "\n") + "\n").data(using: .utf8),
-           let handle = try? FileHandle(forWritingTo: Paths.appLog) {
-            handle.seekToEndOfFile()
-            handle.write(data)
-            try? handle.close()
+            if let data = (incoming.joined(separator: "\n") + "\n").data(using: .utf8),
+               let handle = try? FileHandle(forWritingTo: Paths.appLog) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                try? handle.close()
+            }
         }
     }
 }
