@@ -10,6 +10,10 @@ export interface Env {
   AUTH_AUDIENCE: string;
   /** Comma-separated origins allowed to call the console API from another origin. */
   CONSOLE_ORIGINS?: string;
+  /** owner/name of the repository whose GitHub Releases carry the client binaries. */
+  GITHUB_REPO?: string;
+  /** Fine-grained PAT with Contents: Read; without it the console links to GitHub instead. */
+  GITHUB_RELEASES_TOKEN?: string;
 }
 
 /** Everything a signed device request may be used for: five minutes either way. */
