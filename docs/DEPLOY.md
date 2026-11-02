@@ -34,7 +34,7 @@ pnpm deploy            # 构建控制台 + wrangler deploy
 
 ```sh
 curl -s https://exe.ntnl.io/api/health
-exe doctor             # 在任意一台已配对设备上
+exe doctor             # 在任意一台已接入的设备上
 ```
 
 ## 本地开发

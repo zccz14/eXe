@@ -4,7 +4,7 @@
 
 | Cybion Worker | eXe | 说明 |
 |---|---|---|
-| 配对码 + 批准 | —— | eXe 没有配对；设备配置里写 `trust` |
+| 登记 + 批准 | 设备的 `trust` 配置 | eXe 没有登记批准流程；信任由人在设备上写死 |
 | `GET /worker/v1/.../events`（SSE） | `GET /v1/agents/{address}/stream` | `call` / `cancel` / `heartbeat` 事件同构 |
 | `POST .../calls/{id}/received` | 同名 | 语义不变 |
 | `POST .../calls/{id}/result` | 同名 | 载荷从明文 JSON 变成密封信封 |

@@ -10,7 +10,7 @@
 
 | 目录 | 东西 | 技术栈 |
 |---|---|---|
-| `worker/` | CF Worker：配对、设备登记、SSE 投递、结果收取、控制台 API | TypeScript（Workers native）+ D1 |
+| `worker/` | CF Worker：设备登记、SSE 投递、结果收取、控制台 API | TypeScript（Workers native）+ D1 |
 | `console/` | 控制台 GUI | React + Vite + shadcn + `@zccz14/ux` |
 | `agent/crates/exe-core` | 协议 / 密码学 / 策略 / 执行（无平台假设） | Rust |
 | `agent/crates/exe-cli` | **Windows / Linux / macOS** 桌面 binary | Rust |
@@ -21,7 +21,8 @@
 
 ```sh
 # 设备端
-exe run            # 首次运行打印配对码并打开浏览器批准
+exe init           # 生成密钥、打印本机地址；把签发者地址写进 trust
+ exe run            # 自登记并向云端订阅事件流
 exe status
 exe doctor
 ```
