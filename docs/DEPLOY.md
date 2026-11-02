@@ -1,6 +1,19 @@
 # 部署与运维
 
-## 首次部署（Cloudflare）
+## CI/CD
+
+合并进 `main` 后由 `.github/workflows/deploy.yml` 自动执行：建表 → 部署 Worker → 构建并发布控制台到 Pages → 线上冒烟。
+
+启用前在仓库里加两个 secret（**用最小权限的 API Token，不要用 OAuth 令牌**）：
+
+```sh
+gh secret set CLOUDFLARE_API_TOKEN    # 只授：Workers Scripts:Edit / Workers Routes:Edit / D1:Edit / Pages:Edit / Account Settings:Read
+gh secret set CLOUDFLARE_ACCOUNT_ID   # b831a34938a75457b5029d31cea13c25
+```
+
+Token 缺失时工作流会跳过部署并打 warning，不会把 CI 变红。
+
+## 首次部署（手动，Cloudflare）
 
 ```sh
 wrangler login                       # 交互式，本机只做一次
