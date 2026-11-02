@@ -77,7 +77,12 @@ async function main() {
     const devices = await browser.request(base, "GET", "/api/devices");
     assert.equal(devices.devices.length, 1);
     assert.equal(devices.devices[0].address, deviceAddress);
-    for (let attempt = 0; attempt < 40 && !devices.devices[0].online; attempt += 1) await wait(250);
+    for (let attempt = 0; attempt < 40 && !devices.devices[0]?.online; attempt += 1) await wait(250);
+    // The relay learns hostname/platform/version from the device's own signed
+    // registration, so no `sysinfo` verb is needed to display them.
+    const listed = await browser.request(base, "GET", "/api/devices");
+    assert.equal(listed.devices[0].hostname, "smoke-host");
+    assert.equal(listed.devices[0].online, true);
 
     const settle = async (callId) => {
       for (let attempt = 0; attempt < 60; attempt += 1) {
@@ -90,21 +95,26 @@ async function main() {
       throw new Error(`call ${callId} did not settle`);
     };
 
-    const echo = await browser.call(base, deviceAddress, "echo", { text: "hello from rust" });
-    const echoResult = await settle(echo.call.call_id);
-    assert.equal(echoResult.opened.output.text, "hello from rust");
+    // There is no local permission list and no tool registry: `shell` is the
+    // only verb, and a trusted signature runs it.
+    const shell = await browser.call(base, deviceAddress, "shell", { command: "printf smoke" });
+    const shellResult = await settle(shell.call.call_id);
+    assert.equal(shellResult.opened.ok, true);
+    assert.equal(shellResult.opened.output.tool, "shell");
+    assert.equal(shellResult.opened.output.stdout, "smoke");
+    assert.equal(shellResult.call.status, "succeeded", "the signed outcome sets the status");
 
-    const sysinfo = await browser.call(base, deviceAddress, "sysinfo", {});
-    const sysinfoResult = await settle(sysinfo.call.call_id);
-    assert.equal(sysinfoResult.opened.output.tool, "sysinfo");
-    assert.equal(sysinfoResult.opened.output.hostname, "smoke-host");
+    const cwd = await browser.call(base, deviceAddress, "shell", { command: "pwd", cwd: "." });
+    const cwdResult = await settle(cwd.call.call_id);
+    assert.equal(cwdResult.opened.ok, true);
+    assert.ok(cwdResult.opened.output.stdout.trim().length > 0, "cwd is honoured");
 
-    // There is no local permission list: a trusted signature runs the shell too.
-    const bash = await browser.call(base, deviceAddress, "bash", { command: "printf smoke" });
-    const bashResult = await settle(bash.call.call_id);
-    assert.equal(bashResult.opened.ok, true);
-    assert.equal(bashResult.opened.output.stdout, "smoke");
-    assert.equal(bashResult.call.status, "succeeded", "the signed outcome sets the status");
+    // The retired demo verbs are gone from the agent, not just from the console.
+    const retired = await browser.call(base, deviceAddress, "sysinfo", {});
+    const retiredResult = await settle(retired.call.call_id);
+    assert.equal(retiredResult.opened.ok, false);
+    assert.equal(retiredResult.opened.code, "unknown_tool");
+    assert.equal(retiredResult.call.status, "failed", "an unknown verb is a signed failure, not silence");
     console.log("agent smoke: ok");
   } catch (error) {
     console.error("FAILED:", error instanceof Error ? error.message : error);

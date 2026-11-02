@@ -105,7 +105,7 @@ test("only the device opens its command and the wire names nothing", () => {
   assert.throws(() => openCall({ seed: issuer.seed, call }), "another key cannot open it");
 
   const wire = JSON.stringify({ ...call, sealed: undefined }) + vectors.call.sealed;
-  assert.equal(wire.includes("echo"), false, "no tool name on the wire");
+  assert.equal(wire.includes("shell"), false, "no tool name on the wire");
   assert.equal(wire.includes("hello eXe"), false, "no arguments either");
 
   // The associated data binds the envelope: a different call_id cannot open it.
@@ -161,8 +161,8 @@ test("sealing is randomized but still opens", () => {
       issuer: addressOf(issuer),
       device: addressOf(device),
       callId,
-      name: "echo",
-      args: "{}",
+      name: "shell",
+      args: '{"command":"uname -a"}',
       issuedAt: 1_700_000_000,
       expiresAt: 1_700_000_300,
     });
@@ -170,7 +170,7 @@ test("sealing is randomized but still opens", () => {
   const second = make();
   assert.notEqual(first.sealed, second.sealed);
   for (const call of [first, second]) {
-    assert.equal(openCall({ seed: device.seed, call }).name, "echo");
+    assert.equal(openCall({ seed: device.seed, call }).name, "shell");
     assert.ok(verifyCall(call));
   }
 });

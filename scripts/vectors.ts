@@ -31,14 +31,14 @@ const callId = "11111111-1111-4111-8111-111111111111";
 const issuedAt = 1_700_000_000;
 const expiresAt = 1_700_000_300;
 
-const callPlaintext = JSON.stringify({ name: "echo", args: '{"text":"hello eXe"}' });
+const callPlaintext = JSON.stringify({ name: "shell", args: '{"command":"uname -a"}' });
 const call = buildCall({
   seed: issuer.seed,
   issuer: issuerAddress,
   device: deviceAddress,
   callId,
-  name: "echo",
-  args: '{"text":"hello eXe"}',
+  name: "shell",
+  args: '{"command":"uname -a"}',
   issuedAt,
   expiresAt,
   nonce: fill(9, 24),

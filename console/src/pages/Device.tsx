@@ -7,14 +7,8 @@ import { localCalls, newCallId, openSealed, sealDeviceCall } from "../keystore";
 import { statusCopy, useCopy } from "../i18n";
 import { Badge, Button, Card, Input, Stat } from "../ui";
 
-const TOOLS = [
-  { name: "echo", hint: '{"text":"hello eXe"}' },
-  { name: "sysinfo", hint: "{}" },
-  { name: "sleep", hint: '{"seconds":5}' },
-  { name: "bash", hint: '{"command":"uname -a"}' },
-] as const;
-
-type ToolName = (typeof TOOLS)[number]["name"];
+/** The agent has exactly one verb; the name is still a field because the wire carries it. */
+const DEFAULT_TOOL = "shell";
 
 function statusTone(status: CallView["status"]): "muted" | "ok" | "warn" | "bad" {
   if (status === "succeeded") return "ok";
@@ -27,8 +21,8 @@ export function DevicePage() {
   const t = useCopy();
   const { address = "" } = useParams();
   const queryClient = useQueryClient();
-  const [tool, setTool] = useState<ToolName>("echo");
-  const [argsText, setArgsText] = useState<string>('{"text":"hello eXe"}');
+  const [tool, setTool] = useState(DEFAULT_TOOL);
+  const [argsText, setArgsText] = useState<string>('{"command":"uname -a"}');
   const [openCall, setOpenCall] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -148,21 +142,21 @@ export function DevicePage() {
 
       <Card className="space-y-3">
         <div className="text-sm font-medium">{t("send_call")}</div>
-        <div className="flex flex-wrap gap-2">
-          {TOOLS.map((item) => (
-            <Button
-              key={item.name}
-              variant={tool === item.name ? "default" : "outline"}
-              onClick={() => {
-                setTool(item.name);
-                setArgsText(item.hint);
-              }}
-            >
-              {item.name}
-            </Button>
-          ))}
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Input
+            value={tool}
+            onChange={(event) => setTool(event.target.value)}
+            placeholder={DEFAULT_TOOL}
+            aria-label={t("tool_name")}
+            className="font-mono text-xs sm:w-40"
+          />
+          <Input
+            className="min-w-0 flex-1 font-mono text-xs"
+            value={argsText}
+            onChange={(event) => setArgsText(event.target.value)}
+            aria-label={t("arguments")}
+          />
         </div>
-        <Input className="font-mono text-xs" value={argsText} onChange={(event) => setArgsText(event.target.value)} aria-label={t("arguments")} />
         <div className="flex items-center justify-between gap-3">
           <p className="flex items-center gap-1 text-xs text-muted-foreground">
             <ShieldAlertIcon className="size-3.5" />

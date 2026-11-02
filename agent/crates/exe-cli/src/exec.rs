@@ -19,37 +19,15 @@ fn truncate(bytes: &[u8], limit: usize) -> String {
 }
 
 /// Runs one verified, decrypted command. A signature from an address in `trust`
-/// is the whole authorization: there is no second, local permission list.
+/// is the whole authorization: there is no second, local permission list, and no
+/// tool registry either — the agent offers exactly one verb, a shell.
 pub async fn execute(name: &str, args: &str) -> String {
     let args: Value = match serde_json::from_str(args) {
         Ok(value @ Value::Object(_)) => value,
         _ => return failure("invalid_args", "arguments must be a JSON object"),
     };
     match name {
-        "echo" => {
-            let text = args.get("text").and_then(Value::as_str).unwrap_or_default();
-            json!({ "ok": true, "output": { "tool": "echo", "text": text } }).to_string()
-        }
-        "sleep" => {
-            let seconds = args
-                .get("seconds")
-                .and_then(Value::as_u64)
-                .unwrap_or(1)
-                .min(MAX_RUNTIME_SECONDS);
-            tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
-            json!({ "ok": true, "output": { "tool": "sleep", "seconds": seconds } }).to_string()
-        }
-        "sysinfo" => json!({
-            "ok": true,
-            "output": {
-                "tool": "sysinfo",
-                "hostname": crate::config::hostname(),
-                "platform": crate::config::platform(),
-                "agent_version": env!("CARGO_PKG_VERSION"),
-            }
-        })
-        .to_string(),
-        "bash" => bash(&args).await,
+        "shell" => shell(&args).await,
         other => failure(
             "unknown_tool",
             &format!("`{other}` is not implemented by this agent"),
@@ -57,9 +35,11 @@ pub async fn execute(name: &str, args: &str) -> String {
     }
 }
 
-async fn bash(args: &Value) -> String {
+/// One verb: `command` goes to the platform's own shell (`sh -c` on Unix,
+/// `cmd /C` on Windows), which is why the name is `shell` and not `bash`.
+async fn shell(args: &Value) -> String {
     let Some(command) = args.get("command").and_then(Value::as_str) else {
-        return failure("invalid_args", "bash requires a `command` string");
+        return failure("invalid_args", "shell requires a `command` string");
     };
     let mut process = tokio::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" });
     if cfg!(windows) {
@@ -88,7 +68,7 @@ async fn bash(args: &Value) -> String {
         Ok(Ok(output)) => json!({
             "ok": output.status.success(),
             "output": {
-                "tool": "bash",
+                "tool": "shell",
                 "exit_code": output.status.code(),
                 "stdout": truncate(&output.stdout, MAX_OUTPUT_BYTES),
                 "stderr": truncate(&output.stderr, MAX_OUTPUT_BYTES),
