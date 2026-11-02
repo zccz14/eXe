@@ -1,7 +1,9 @@
 // Emits the cross-language test vectors both implementations must agree on.
 import { writeFileSync } from "node:fs";
 import {
+  accountTranscript,
   approvalTranscript,
+  signAccount,
   b64u,
   callTranscript,
   hex,
@@ -13,7 +15,7 @@ import {
   signCall,
   unb64u,
   utf8,
-} from "../worker/src/crypto.ts";
+} from "../shared/protocol.ts";
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 
@@ -42,6 +44,15 @@ const callFields = {
 };
 const callSig = signCall(accountSigSeed, callFields);
 
+const accountFields = {
+  userId: callFields.accountId,
+  nonce: "account-nonce-000000000000",
+  sigPub: accountSigPub,
+  kexPub: accountKexPub,
+  issuedAt: 1_700_000_000,
+};
+const accountSig = signAccount(accountSigSeed, accountFields);
+
 const approvalFields = {
   pairingId: "44444444-4444-4444-8444-444444444444",
   deviceId: callFields.deviceId,
@@ -58,6 +69,7 @@ const plaintext = '{"ok":true,"output":{"text":"hello eXe"}}';
 const sealed = sealResult({
   callId: callFields.callId,
   deviceId: callFields.deviceId,
+  ok: true,
   accountKexPub: unb64u(accountKexPub),
   plaintext,
   ephemeralSecret: ephemeralSeed,
@@ -73,6 +85,7 @@ if (opened !== plaintext) throw new Error("seal round trip failed");
 const resultFields = {
   callId: callFields.callId,
   deviceId: callFields.deviceId,
+  ok: true,
   eph: unb64u(sealed.eph),
   nonce: unb64u(sealed.nonce),
   ciphertext: unb64u(sealed.ct),
@@ -93,11 +106,13 @@ const vectors = {
     ephemeral_seed: hex(ephemeralSeed),
     ephemeral_pub: ephemeralPub,
   },
+  account: { ...accountFields, transcript_sha256: hex(sha256(accountTranscript(accountFields))), sig: accountSig },
   call: { ...callFields, transcript_sha256: hex(sha256(callTranscript(callFields))), sig: callSig },
   approval: { ...approvalFields, transcript_sha256: hex(sha256(approvalTranscript(approvalFields))), sig: approvalSig },
   result: {
     call_id: callFields.callId,
     device_id: callFields.deviceId,
+    ok: true,
     plaintext,
     eph: sealed.eph,
     nonce: sealed.nonce,

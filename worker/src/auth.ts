@@ -1,6 +1,6 @@
 // AuthMini access-token verification (EdDSA over JWKS) with an in-isolate cache.
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { unb64u, utf8 } from "./crypto.ts";
+import { unb64u, utf8 } from "../../shared/protocol.ts";
 import type { Env } from "./db.ts";
 import { ApiError } from "./http.ts";
 
@@ -32,6 +32,11 @@ async function jwks(env: Env, force = false): Promise<Map<string, Uint8Array>> {
   return keys;
 }
 
+/** AUTH_AUDIENCE accepts a comma-separated list; a token matching any entry is accepted. */
+export function acceptedAudiences(env: Env): string[] {
+  return (env.AUTH_AUDIENCE ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+}
+
 export interface Identity {
   userId: string;
   expiresAt: number;
@@ -54,7 +59,8 @@ export async function verifyAccessToken(env: Env, token: string): Promise<Identi
 
   if (payload.iss !== env.AUTH_ISSUER) throw new ApiError(401, "unexpected token issuer");
   const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-  if (!audiences.includes(env.AUTH_AUDIENCE)) throw new ApiError(401, "token was minted for another audience");
+  const accepted = acceptedAudiences(env);
+  if (!accepted.some((audience) => audiences.includes(audience))) throw new ApiError(401, "token was minted for another audience");
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = typeof payload.exp === "number" ? payload.exp : 0;
   if (expiresAt <= now) throw new ApiError(401, "access token expired");

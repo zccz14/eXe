@@ -32,6 +32,8 @@ export default {
       if (path.startsWith("/api/")) {
         const userId = await requireUser(request, env);
         if (path === "/api/me" && method === "GET") return await consoleApi.me(env, userId);
+        if (path === "/api/account/challenge" && method === "GET") return await consoleApi.challenge(env, userId);
+        if (path === "/api/account" && method === "PUT") return await consoleApi.registerAccount(env, userId, request);
         if (path === "/api/devices" && method === "GET") return await consoleApi.listDevices(env, userId);
         if (path === "/api/calls" && method === "GET") return await consoleApi.listCalls(env, userId, url);
         match = path.match(new RegExp(`^/api/devices/${ID}$`));

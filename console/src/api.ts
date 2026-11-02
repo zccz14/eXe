@@ -68,17 +68,39 @@ export interface CallView {
 }
 
 export interface PairingView {
+  pairing_id: string;
   user_code: string;
   hostname: string;
   platform: string;
   version: string;
   status: string;
   expires_at: number;
+  device_id: string;
   device_sig_pub: string;
+  device_kex_pub: string;
+  account_sig_pub: string;
+  account_kex_pub: string;
   sas: string;
+}
+
+export interface Me {
+  account_id: string;
+  registered: boolean;
+  sig_pub: string | null;
+  kex_pub: string | null;
+  fingerprint: string | null;
+  custody: "browser";
+}
+
+export interface SealedEnvelope {
+  v: 1;
+  ok: boolean;
+  eph: string;
+  nonce: string;
+  ct: string;
 }
 
 export interface CallDetail {
   call: CallView;
-  result: unknown;
+  envelope: SealedEnvelope | null;
 }

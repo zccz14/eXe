@@ -121,6 +121,8 @@ impl KexPair {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SealedResult {
     pub v: u8,
+    /// Signed alongside the ciphertext: the cloud can no longer decrypt to find out.
+    pub ok: bool,
     pub eph: String,
     pub nonce: String,
     pub ct: String,
@@ -150,6 +152,7 @@ fn seal_aad(call_id: &str, device_id: &str) -> Vec<u8> {
 pub fn seal_result(
     call_id: &str,
     device_id: &str,
+    ok: bool,
     account_kex_public: &[u8],
     plaintext: &str,
 ) -> Result<SealedResult, CryptoError> {
@@ -175,6 +178,7 @@ pub fn seal_result(
         .map_err(|_| CryptoError::Open)?;
     Ok(SealedResult {
         v: 1,
+        ok,
         eph: b64u(X25519Public::from(&ephemeral).as_bytes()),
         nonce: b64u(&nonce),
         ct: b64u(&ciphertext),
@@ -220,7 +224,7 @@ mod tests {
     #[test]
     fn sealing_round_trips() {
         let account = KexPair::generate();
-        let sealed = seal_result("call", "device", &account.public, "{\"ok\":true}").unwrap();
+        let sealed = seal_result("call", "device", true, &account.public, "{\"ok\":true}").unwrap();
         let opened = open_result(&account.secret, "call", "device", &sealed).unwrap();
         assert_eq!(opened, "{\"ok\":true}");
         assert!(open_result(&account.secret, "other", "device", &sealed).is_err());

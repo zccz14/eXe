@@ -1,10 +1,11 @@
-import { newAccountKeys, openSecret, sealSecret, unb64u, b64u, equalHex, sha256Hex, randomBytes } from "./crypto.ts";
+// Storage layer. The worker never holds a private key: only public keys, hashes
+// and sealed envelopes are persisted (see docs/THREAT-MODEL.md).
+import { b64u, randomBytes, sha256Hex, equalHex, unb64u } from "../../shared/protocol.ts";
 import { now } from "./http.ts";
 
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
-  EXE_KEK: string;
   AUTH_ISSUER: string;
   AUTH_AUDIENCE: string;
 }
@@ -13,9 +14,8 @@ export interface AccountRow {
   user_id: string;
   sig_pub: string;
   kex_pub: string;
-  sig_sk_sealed: string;
-  kex_sk_sealed: string;
   created_at: number;
+  updated_at: number;
 }
 
 export interface DeviceRow {
@@ -71,50 +71,15 @@ export interface PairingRow {
   version: string;
   expires_at: number;
   status: string;
-  device_id: string | null;
+  device_id: string;
   account_id: string | null;
   approval: string | null;
   created_at: number;
   last_polled_at: number;
 }
 
-export function kek(env: Env): Uint8Array {
-  return unb64u(env.EXE_KEK);
-}
-
-/** Creates account key material on first authenticated touch; idempotent under races. */
-export async function ensureAccount(env: Env, userId: string): Promise<AccountRow> {
-  const existing = await env.DB.prepare("SELECT * FROM accounts WHERE user_id=?").bind(userId).first<AccountRow>();
-  if (existing) return existing;
-  const keys = newAccountKeys();
-  const sigSk = await sealSecret(kek(env), keys.sigSk);
-  const kexSk = await sealSecret(kek(env), keys.kexSk);
-  await env.DB.prepare(
-    "INSERT INTO accounts(user_id,sig_pub,kex_pub,sig_sk_sealed,kex_sk_sealed,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(user_id) DO NOTHING",
-  )
-    .bind(userId, b64u(keys.sigPub), b64u(keys.kexPub), sigSk, kexSk, now())
-    .run();
-  return (await env.DB.prepare("SELECT * FROM accounts WHERE user_id=?").bind(userId).first<AccountRow>())!;
-}
-
-export interface UnsealedAccount {
-  row: AccountRow;
-  sigPub: Uint8Array;
-  kexPub: Uint8Array;
-  sigSk: Uint8Array;
-  kexSk: Uint8Array;
-}
-
-/** Private keys exist in plaintext only inside one request; storage keeps AES-GCM seals. */
-export async function unsealAccount(env: Env, userId: string): Promise<UnsealedAccount> {
-  const row = await ensureAccount(env, userId);
-  return {
-    row,
-    sigPub: unb64u(row.sig_pub),
-    kexPub: unb64u(row.kex_pub),
-    sigSk: await openSecret(kek(env), row.sig_sk_sealed),
-    kexSk: await openSecret(kek(env), row.kex_sk_sealed),
-  };
+export async function accountByUser(env: Env, userId: string): Promise<AccountRow | null> {
+  return env.DB.prepare("SELECT * FROM accounts WHERE user_id=?").bind(userId).first<AccountRow>();
 }
 
 export async function deviceById(env: Env, id: string): Promise<DeviceRow | null> {
@@ -140,3 +105,5 @@ export async function callById(env: Env, id: string): Promise<CallRow | null> {
 export function newToken(): string {
   return b64u(randomBytes(32));
 }
+
+export { unb64u };

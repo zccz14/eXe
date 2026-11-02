@@ -226,9 +226,14 @@ async fn execute_call(
         "executing"
     );
     let plaintext = crate::exec::execute(policy, &call).await;
+    let ok = serde_json::from_str::<serde_json::Value>(&plaintext)
+        .ok()
+        .and_then(|value| value.get("ok").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false);
     match ResultEnvelope::build(
         &call.id,
         &config.device_id,
+        ok,
         account_kex_pub,
         &plaintext,
         keys,

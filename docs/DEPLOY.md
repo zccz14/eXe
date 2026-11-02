@@ -7,8 +7,6 @@ wrangler login                       # 交互式，本机只做一次
 wrangler d1 create exe               # 记下 database_id，填进 wrangler.jsonc
 pnpm build                           # 构建控制台到 console/dist
 wrangler d1 execute exe --remote --file worker/src/schema.sql
-head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '='   # 生成 EXE_KEK
-wrangler secret put EXE_KEK          # 粘贴上面的值
 wrangler deploy
 ```
 
@@ -18,10 +16,15 @@ token audience 必须与它逐字一致。
 
 要求：
 
-- `EXE_KEK` 只以 secret 形式存在，不写进仓库、不进 CI、不进日志。
-- `EXE_KEK` 丢失等于账号私钥不可解封：设备仍然可信，但历史结果无法再解密，
-  新的调用也签不出来。轮换需要重新配对设备。**备份放在密码管理器里。**
-- 换 `EXE_KEK` 时旧密文不会自动迁移，按「重新配对」处理。
+- 云端**不需要任何账号私钥**，因此没有需要备份的密钥材料。丢了 worker、
+  丢了数据库，也解不开任何一条历史结果。
+- `AUTH_AUDIENCE` 支持逗号分隔的多个 audience；API 只认其中的任何一个，
+  建议保持单一 `exe.ntnl.io`。控制台额外向 AuthMini 申请的 audience
+  （默认 `exe.ntnl.io,linkit.ntnl.io`，供共享外壳的 Linkit 组件使用）
+  由构建期 `VITE_AUTH_AUDIENCES` 控制，不影响 API 授权。
+- 从旧版本（云端托管私钥）升级：先跑 `worker/migrations/002-non-custodial.sql`
+  清掉旧表，再跑 `schema.sql`，最后 `wrangler secret delete EXE_KEK`。
+  旧账号需要在新浏览器里重新登记公钥。
 
 ## 日常发布
 
