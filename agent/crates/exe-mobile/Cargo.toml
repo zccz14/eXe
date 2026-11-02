@@ -1,0 +1,21 @@
+[package]
+name = "exe-mobile"
+description = "C ABI bridge so the Android and iOS shells run the same eXe core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "exe_mobile"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+exe = { path = "../exe-cli" }
+tokio.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
