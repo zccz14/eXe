@@ -3,7 +3,7 @@ use exe::{config, run};
 use exe_core::parse_address;
 
 const HELP: &str = "\
-exe — eXe device agent
+exe — eXe device client
 
 USAGE:
     exe run              Self-register and serve calls (creates the key on first run)
@@ -12,7 +12,7 @@ USAGE:
     exe status           Show address, trust list and relay
     exe doctor           Check key, trust list and relay reachability
     exe forget           Delete the local key (the console can still call this address)
-    exe version          Print the agent version
+    exe version          Print the client version
 ";
 
 #[tokio::main(flavor = "multi_thread")]

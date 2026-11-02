@@ -30,7 +30,7 @@ jobs:
         run: pnpm build
 
   rust:
-    name: agent (rust, protocol vectors)
+    name: clients (rust, protocol vectors)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,13 +39,13 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: agent
-      - run: cargo fmt --manifest-path agent/Cargo.toml --all -- --check
-      - run: cargo clippy --manifest-path agent/Cargo.toml --all-targets -- -D warnings
-      - run: cargo test --manifest-path agent/Cargo.toml
+          workspaces: clients
+      - run: cargo fmt --manifest-path clients/Cargo.toml --all -- --check
+      - run: cargo clippy --manifest-path clients/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path clients/Cargo.toml
 
   integration:
-    name: integration (local worker + real agent)
+    name: integration (local worker + real client)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [worker, rust]
@@ -59,14 +59,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: agent
+          workspaces: clients
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - run: cargo build --manifest-path agent/Cargo.toml
+      - run: cargo build --manifest-path clients/Cargo.toml
       - name: End-to-end protocol
         run: pnpm test:integration
       - name: End-to-end with the real binary
-        run: pnpm test:agent
+        run: pnpm test:client
 
   mobile:
     name: mobile libraries
@@ -82,15 +82,15 @@ jobs:
         with:
           ndk-version: r27c
       - name: Install cargo-ndk
-        working-directory: agent
+        working-directory: clients
         run: cargo install cargo-ndk --version 4.1.2 --locked
       - name: Build the Android library
-        working-directory: agent
+        working-directory: clients
         run: cargo ndk -t arm64-v8a build -p exe-mobile --release
       - uses: actions/upload-artifact@v4
         with:
           name: exe-android-arm64
-          path: agent/target/aarch64-linux-android/release/libexe_mobile.so
+          path: clients/target/aarch64-linux-android/release/libexe_mobile.so
 
   pr-check:
     name: pr-check

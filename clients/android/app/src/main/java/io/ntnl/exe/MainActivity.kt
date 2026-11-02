@@ -24,12 +24,12 @@ class MainActivity : AppCompatActivity() {
             },
         )
         val dir = filesDir.absolutePath
-        status.text = "This device: ${Agent.address(dir) ?: "no key"}\n\n" +
+        status.text = "This device: ${Client.address(dir) ?: "no key"}\n\n" +
             "Add this address in the console, then give this device the console's address " +
             "with `exe trust <address>`. No pairing code exists."
         start.setOnClickListener {
-            Agent.start(dir, "https://exe.ntnl.io")
-            status.text = "Serving calls as ${Agent.address(dir)}"
+            Client.start(dir, "https://exe.ntnl.io")
+            status.text = "Serving calls as ${Client.address(dir)}"
         }
     }
 }

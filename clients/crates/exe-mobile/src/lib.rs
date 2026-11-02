@@ -23,7 +23,7 @@ fn export(value: String) -> *mut c_char {
 }
 
 #[no_mangle]
-pub extern "C" fn exe_agent_version() -> *mut c_char {
+pub extern "C" fn exe_client_version() -> *mut c_char {
     export(env!("CARGO_PKG_VERSION").to_owned())
 }
 
@@ -32,9 +32,9 @@ pub extern "C" fn exe_agent_version() -> *mut c_char {
 ///
 /// # Safety
 /// `config_dir` must be a valid NUL-terminated string; the result must be freed
-/// with `exe_agent_free`.
+/// with `exe_client_free`.
 #[no_mangle]
-pub unsafe extern "C" fn exe_agent_address(config_dir: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn exe_client_address(config_dir: *const c_char) -> *mut c_char {
     let Some(dir) = read(config_dir) else {
         return std::ptr::null_mut();
     };
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn exe_agent_address(config_dir: *const c_char) -> *mut c_
 /// # Safety
 /// `value` must come from this library and be freed exactly once.
 #[no_mangle]
-pub unsafe extern "C" fn exe_agent_free(value: *mut c_char) {
+pub unsafe extern "C" fn exe_client_free(value: *mut c_char) {
     if !value.is_null() {
         drop(CString::from_raw(value));
     }
@@ -94,7 +94,7 @@ pub(crate) fn run_inner(dir: PathBuf, cloud: String) -> i32 {
         match run::run(cfg).await {
             Ok(()) => 0,
             Err(error) => {
-                tracing::error!(%error, "agent stopped");
+                tracing::error!(%error, "client stopped");
                 7
             }
         }
@@ -107,7 +107,7 @@ pub(crate) fn run_inner(dir: PathBuf, cloud: String) -> i32 {
 /// # Safety
 /// Both pointers must be valid NUL-terminated strings for the duration of the call.
 #[no_mangle]
-pub unsafe extern "C" fn exe_agent_run(config_dir: *const c_char, cloud: *const c_char) -> i32 {
+pub unsafe extern "C" fn exe_client_run(config_dir: *const c_char, cloud: *const c_char) -> i32 {
     let (Some(config_dir), Some(cloud)) = (read(config_dir), read(cloud)) else {
         return 2;
     };
@@ -126,9 +126,9 @@ mod android {
     use jni::sys::jint;
     use jni::JNIEnv;
 
-    /// `io.ntnl.exe.Agent.nativeRun(configDir, cloud)` — the JNI entry the APK calls.
+    /// `io.ntnl.exe.Client.nativeRun(configDir, cloud)` — the JNI entry the APK calls.
     #[no_mangle]
-    pub extern "system" fn Java_io_ntnl_exe_Agent_nativeRun<'local>(
+    pub extern "system" fn Java_io_ntnl_exe_Client_nativeRun<'local>(
         mut env: JNIEnv<'local>,
         _class: JClass<'local>,
         config_dir: JString<'local>,
@@ -152,9 +152,9 @@ mod android {
         crate::run_inner(std::path::PathBuf::from(dir), relay) as jint
     }
 
-    /// `io.ntnl.exe.Agent.nativeAddress(configDir)` — the address to paste into the console.
+    /// `io.ntnl.exe.Client.nativeAddress(configDir)` — the address to paste into the console.
     #[no_mangle]
-    pub extern "system" fn Java_io_ntnl_exe_Agent_nativeAddress<'local>(
+    pub extern "system" fn Java_io_ntnl_exe_Client_nativeAddress<'local>(
         mut env: JNIEnv<'local>,
         _class: JClass<'local>,
         config_dir: JString<'local>,

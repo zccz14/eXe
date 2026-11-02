@@ -20,7 +20,7 @@ fn truncate(bytes: &[u8], limit: usize) -> String {
 
 /// Runs one verified, decrypted command. A signature from an address in `trust`
 /// is the whole authorization: there is no second, local permission list, and no
-/// tool registry either — the agent offers exactly one verb, a shell.
+/// tool registry either — the client offers exactly one verb, a shell.
 pub async fn execute(name: &str, args: &str) -> String {
     let args: Value = match serde_json::from_str(args) {
         Ok(value @ Value::Object(_)) => value,
@@ -30,7 +30,7 @@ pub async fn execute(name: &str, args: &str) -> String {
         "shell" => shell(&args).await,
         other => failure(
             "unknown_tool",
-            &format!("`{other}` is not implemented by this agent"),
+            &format!("`{other}` is not implemented by this client"),
         ),
     }
 }

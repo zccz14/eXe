@@ -1,9 +1,9 @@
 import Foundation
 
-/// iOS shell over the shared Rust core. `exe_agent_run` blocks, so it runs on
+/// iOS shell over the shared Rust core. `exe_client_run` blocks, so it runs on
 /// its own thread; the UI reads `address.txt` to show this device's address.
-public final class ExeAgent {
-    public static let shared = ExeAgent()
+public final class ExeClient {
+    public static let shared = ExeClient()
     private var thread: Thread?
 
     public var configDirectory: URL {
@@ -16,10 +16,10 @@ public final class ExeAgent {
         try? FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
         let thread = Thread { [configDirectory] in
             _ = configDirectory.path.withCString { path in
-                cloud.withCString { url in exe_agent_run(path, url) }
+                cloud.withCString { url in exe_client_run(path, url) }
             }
         }
-        thread.name = "exe-agent"
+        thread.name = "exe-client"
         self.thread = thread
         thread.start()
     }
@@ -32,8 +32,8 @@ public final class ExeAgent {
             if !trimmed.isEmpty { return trimmed }
         }
         return configDirectory.path.withCString { path in
-            guard let raw = exe_agent_address(path) else { return nil }
-            defer { exe_agent_free(raw) }
+            guard let raw = exe_client_address(path) else { return nil }
+            defer { exe_client_free(raw) }
             return String(cString: raw)
         }
     }

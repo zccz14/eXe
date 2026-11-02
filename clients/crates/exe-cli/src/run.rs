@@ -41,7 +41,7 @@ impl ResultCache {
 }
 
 #[derive(Clone)]
-struct Agent {
+struct Client {
     client: reqwest::Client,
     cloud: String,
     identity: Identity,
@@ -67,10 +67,10 @@ pub async fn run(config: Config) -> Result<()> {
         address = identity.address().as_str(),
         cloud = config.cloud.as_str(),
         trust = ?config.trust,
-        "eXe agent starting"
+        "eXe client starting"
     );
 
-    let agent = Agent {
+    let client = Client {
         client: reqwest::Client::builder()
             .user_agent(concat!("exe/", env!("CARGO_PKG_VERSION")))
             .build()?,
@@ -84,11 +84,11 @@ pub async fn run(config: Config) -> Result<()> {
 
     let mut backoff = 1u64;
     loop {
-        match agent.register().await {
+        match client.register().await {
             Ok(()) => {}
             Err(error) => warn!(%error, "self-registration failed; will retry"),
         }
-        match agent.listen().await {
+        match client.listen().await {
             Ok(()) => backoff = 1,
             Err(error) => {
                 warn!(%error, "event stream ended; reconnecting");
@@ -111,7 +111,7 @@ fn signed(
     request
 }
 
-impl Agent {
+impl Client {
     /// The device announces itself with its own signature; there is no token.
     async fn register(&self) -> Result<()> {
         let path = format!("/v1/devices/{}", self.identity.address());
@@ -205,16 +205,16 @@ impl Agent {
                         call = call.call_id.as_str(),
                         "duplicate delivery; replaying the stored result"
                     );
-                    let agent = self.clone();
-                    tokio::spawn(async move { agent.replay(&call).await });
+                    let client = self.clone();
+                    tokio::spawn(async move { client.replay(&call).await });
                     return;
                 }
-                let agent = self.clone();
+                let client = self.clone();
                 let call_id = call.call_id.clone();
                 let running = self.tasks.clone();
                 let closing = call_id.clone();
                 let handle = tokio::spawn(async move {
-                    agent.execute(call).await;
+                    client.execute(call).await;
                     running.lock().await.remove(&closing);
                 });
                 tasks.insert(call_id, handle);

@@ -8,7 +8,7 @@ import { localCalls, newCallId, openSealed, sealDeviceCall } from "../keystore";
 import { statusCopy, useCopy } from "../i18n";
 import { Badge, Button, Card, Input, Stat } from "../ui";
 
-/** The agent has exactly one verb; the name is still a field because the wire carries it. */
+/** The device has exactly one verb; the name is still a field because the wire carries it. */
 const DEFAULT_TOOL = "shell";
 
 function statusTone(status: CallView["status"]): "muted" | "ok" | "warn" | "bad" {
