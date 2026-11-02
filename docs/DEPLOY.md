@@ -43,6 +43,10 @@ token audience 必须与它逐字一致。
   建议保持单一 `exe.ntnl.io`。控制台额外向 AuthMini 申请的 audience
   （默认 `exe.ntnl.io,linkit.ntnl.io`，供共享外壳的 Linkit 组件使用）
   由构建期 `VITE_AUTH_AUDIENCES` 控制，不影响 API 授权。
+- 控制台构建期不需要写自己的域名：登录时它会把**当前 hostname**（也就是
+  AuthMini 的回调主机名）并进 `audiences`。AuthMini 强制要求 `audiences`
+  包含 `redirect_uri` 的主机名，缺了会直接把请求判成「登录请求无效」。
+  所以换 Pages 域名只改 `CONSOLE_ORIGINS`，不用动 `VITE_AUTH_AUDIENCES`。
 - 草稿期：结构变更一律「删表重建」。本次改动换了设备/调用的主键（地址与 `call_id`），
   线上要执行：
 

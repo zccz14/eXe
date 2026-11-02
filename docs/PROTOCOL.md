@@ -96,14 +96,17 @@ result = { "call_id": "...", "device": "<base58>", "ok": true, "issued_at": 0,
   不是它的编码文本），按字段顺序做 lp 拼接，时间戳 `u64be`：
 
   ```
-  T_call   = "eXe/call\0"   ‖ lp(call_id) ‖ lp(issuer) ‖ lp(device) ‖ u64(issued_at) ‖ u64(expires_at) ‖ lp(sealed)
-  T_result = "eXe/result\0" ‖ lp(call_id) ‖ lp(device) ‖ u8(ok)      ‖ u64(issued_at) ‖ lp(sealed)
+  T_call    = "eXe/call\0"    ‖ lp(call_id) ‖ lp(issuer) ‖ lp(device) ‖ u64(issued_at) ‖ u64(expires_at) ‖ lp(sealed)
+  T_result  = "eXe/result\0"  ‖ lp(call_id) ‖ lp(device) ‖ u8(ok)      ‖ u64(issued_at) ‖ lp(sealed)
+  T_account = "eXe/account\0" ‖ lp(address) ‖ lp(user_id) ‖ lp(nonce)  ‖ u64(issued_at)
   ```
 
   结果的 `device` 字段既是签发者又是验签公钥；调用则由 `issuer` 字段自证。
 - 指令的 `sealed` 用**设备**的 X25519 公钥封；结果的 `sealed` 用**签发者**的 X25519 公钥封。
 - `ok` 在签名范围内：云端解不开正文，成败由设备签出来。
 - `issued_at` 落在 ±300 秒之外、或 `expires_at` 已过，设备一律丢弃；调用寿命上限 1 小时。
+- `T_account` 只用于控制台登记浏览器地址：它证明浏览器持有该地址，
+  「这个人是谁」由 AuthMini JWT 回答，所以 `user_id` 取自 JWT，不在报文里重复。
 
 投递是**至少一次**的：回执丢失时云端会重投同一个 `call_id`。设备因此必须幂等——
 进程内保留 `call_id → 结果信封`，重投时直接回结果，不重复执行。
@@ -140,12 +143,18 @@ call_id, issuer, device, sealed(base64url), sig, issued_at, expires_at, 状态
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
+| GET | `/api/me` | 账号状态 `{ account_id, registered, address, custody }` |
+| GET | `/api/account/challenge` | 注册挑战 `{ nonce }`（5 分钟、单次） |
+| PUT | `/api/account` | 登记浏览器地址，body `{ address, nonce, issued_at, sig }` |
 | POST | `/api/devices` | 添加设备 `{ address }` |
 | GET | `/api/devices` | 列表（地址、在线、主机信息） |
-| DELETE | `/api/devices/{address}` | 移除 |
+| DELETE | `/api/devices/{address}` | 移除（同时把未结的调用标记为取消） |
 | POST | `/api/devices/{address}/calls` | 投递信封 |
 | GET | `/api/calls?device={address}` · `/api/calls/{call_id}` | 状态与信封（浏览器自行解封） |
 | POST | `/api/calls/{call_id}/cancel` | 请求取消 |
+
+注册 body 是**线格式**：`issued_at` 是数字、字段名是 snake_case，`user_id` 不出现
+（JWT 里已经有了）。`address` 与 `user_id` 一起进入 `T_account`，签名才成立。
 
 云端只为**已添加**的地址排队；设备的自登记与它是否被某个账号添加无关。
 
