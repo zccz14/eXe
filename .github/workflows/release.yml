@@ -122,7 +122,7 @@ jobs:
         run: cargo build --manifest-path agent/Cargo.toml -p exe-mobile --release --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: exe-mobile-${{ matrix.target }}
+          name: mobile-${{ matrix.target }}
           path: |
             agent/target/${{ matrix.target }}/release/libexe_mobile.a
             agent/target/${{ matrix.target }}/release/libexe_mobile.so
@@ -133,8 +133,11 @@ jobs:
     needs: [desktop]
     runs-on: ubuntu-latest
     steps:
+      # Only the desktop archives belong in a user-facing release; the mobile
+      # libraries stay as CI artifacts for the app builds.
       - uses: actions/download-artifact@v4
         with:
+          pattern: exe-*
           path: artifacts
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
