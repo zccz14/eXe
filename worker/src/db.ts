@@ -42,8 +42,8 @@ export function trustList(value: string): string[] {
 export interface CallRow {
   call_id: string;
   device_address: string;
-  /** The console that signed it: issuer *is* the owner, so there is no second column. */
-  issuer: string;
+  /** The console that signed it: caller *is* the owner, so there is no second column. */
+  caller: string;
   sealed: string;
   sig: string;
   issued_at: number;

@@ -101,7 +101,7 @@ export async function sealDeviceCall(input: {
   const issuedAt = Math.floor(Date.now() / 1000);
   const call = buildCall({
     seed: identity.seed,
-    issuer: addressOf(identity),
+    caller: addressOf(identity),
     device: input.device,
     callId: input.callId,
     name: input.name,
@@ -153,7 +153,7 @@ export async function localCalls(): Promise<Record<string, LocalCall>> {
 }
 
 export async function openSealed(detail: {
-  call: { call_id: string; issuer: string; device: string; expires_at: number };
+  call: { call_id: string; caller: string; device: string; expires_at: number };
   result: ResultEnvelope;
 }): Promise<unknown> {
   const identity = await localIdentity();
@@ -162,7 +162,7 @@ export async function openSealed(detail: {
 
 /** Opens an attachment the device uploaded for this call; only this key can. */
 export async function openAttachment(
-  call: { call_id: string; issuer: string; device: string; expires_at: number },
+  call: { call_id: string; caller: string; device: string; expires_at: number },
   result: { issued_at: number },
   sealed: Uint8Array,
 ): Promise<unknown> {

@@ -43,7 +43,7 @@ export function makeBrowser() {
       const issuedAt = now();
       return buildCall({
         seed: identity.seed,
-        issuer: address,
+        caller: address,
         device: deviceAddress,
         callId: crypto.randomUUID(),
         name,

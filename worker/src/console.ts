@@ -52,7 +52,7 @@ export interface DeviceStatus {
 export interface CallView {
   call_id: string;
   device: string;
-  issuer: string;
+  caller: string;
   status: string;
   issued_at: number;
   expires_at: number;
@@ -67,7 +67,7 @@ function callView(row: CallRow): CallView {
   return {
     call_id: row.call_id,
     device: row.device_address,
-    issuer: row.issuer,
+    caller: row.caller,
     status: row.status,
     issued_at: row.issued_at,
     expires_at: row.expires_at,
@@ -85,10 +85,10 @@ function callView(row: CallRow): CallView {
  */
 export async function ackCall(env: Env, owner: string, callId: string): Promise<Response> {
   const row = await callById(env, callId);
-  if (!row || row.issuer !== owner) throw new ApiError(404, "call not found");
+  if (!row || row.caller !== owner) throw new ApiError(404, "call not found");
   if (row.result === null) throw new ApiError(409, "the relay has no result to hand over yet");
   if (row.blob_bytes !== null) await env.BLOBS.delete(callId);
-  await env.DB.prepare("DELETE FROM calls WHERE call_id=? AND issuer=?")
+  await env.DB.prepare("DELETE FROM calls WHERE call_id=? AND caller=?")
     .bind(callId, owner)
     .run();
   return empty();
@@ -100,7 +100,7 @@ export async function ackCall(env: Env, owner: string, callId: string): Promise<
  */
 export async function readBlob(env: Env, owner: string, callId: string): Promise<Response> {
   const row = await callById(env, callId);
-  if (!row || row.issuer !== owner) throw new ApiError(404, "call not found");
+  if (!row || row.caller !== owner) throw new ApiError(404, "call not found");
   if (row.blob_bytes === null) throw new ApiError(404, "this call has no attachment");
   const object = await env.BLOBS.get(callId);
   if (!object) throw new ApiError(404, "the attachment is gone");
@@ -141,16 +141,16 @@ export async function deviceStatus(env: Env, address: string): Promise<Response>
 
 /**
  * Accepts an opaque, signed command. The relay cannot read the tool or its
- * arguments: it verifies the issuer signature over the ciphertext and queues it.
+ * arguments: it verifies the caller signature over the ciphertext and queues it.
  * Whether the device will run it is the device's business alone.
  */
 export async function createCall(env: Env, owner: string, address: string, request: Request): Promise<Response> {
   const input = await body<Record<string, unknown>>(request, MAX_CALL_BODY);
   const callId = str(input.call_id, "call_id", 64);
   if (!/^[0-9a-zA-Z-]{8,64}$/.test(callId)) throw new ApiError(400, "call_id must be 8-64 url-safe characters");
-  const issuer = requireAddress(input.issuer, "issuer");
+  const caller = requireAddress(input.caller, "caller");
   const device = requireAddress(input.device, "device");
-  if (issuer !== owner) throw new ApiError(403, "a call must be signed by the address that sent it");
+  if (caller !== owner) throw new ApiError(403, "a call must be signed by the address that sent it");
   if (device !== address) throw new ApiError(400, "the envelope names another device");
   const sealed = str(input.sealed, "sealed", MAX_CALL_BODY);
   const sig = str(input.sig, "sig", 128);
@@ -163,12 +163,12 @@ export async function createCall(env: Env, owner: string, address: string, reque
   const deviceRow = await deviceByAddress(env, address);
   if (!deviceRow) throw new ApiError(404, "no device has registered this address");
 
-  const row: CallEnvelope = { call_id: callId, issuer, device, issued_at: issuedAt, expires_at: expiresAt, sealed, sig };
+  const row: CallEnvelope = { call_id: callId, caller, device, issued_at: issuedAt, expires_at: expiresAt, sealed, sig };
   // Cheap check first: an address the device does not trust is refused by a
   // string comparison, so the relay never hashes 96 KiB of ciphertext on behalf
   // of a stranger. Both refusals answer identically on purpose — "does device D
   // trust address X" is not a question the relay should answer.
-  const accepted = trustList(deviceRow.trust).includes(issuer);
+  const accepted = trustList(deviceRow.trust).includes(caller);
   if (!accepted || !verifyCall(row)) throw new ApiError(403, "the relay will not queue this call");
 
   // The primary key is the replay defence: the same signed envelope sent twice
@@ -176,9 +176,9 @@ export async function createCall(env: Env, owner: string, address: string, reque
   if (await callById(env, callId)) throw new ApiError(409, "call_id already used");
 
   await env.DB.prepare(
-    "INSERT INTO calls(call_id,device_address,issuer,sealed,sig,issued_at,expires_at,status,created_at) VALUES(?,?,?,?,?,?,?,'queued',?)",
+    "INSERT INTO calls(call_id,device_address,caller,sealed,sig,issued_at,expires_at,status,created_at) VALUES(?,?,?,?,?,?,?,'queued',?)",
   )
-    .bind(callId, address, issuer, sealed, sig, issuedAt, expiresAt, now())
+    .bind(callId, address, caller, sealed, sig, issuedAt, expiresAt, now())
     .run();
   return json({ call: callView((await callById(env, callId))!) });
 }
@@ -187,10 +187,10 @@ export async function listCalls(env: Env, owner: string, url: URL): Promise<Resp
   const address = url.searchParams.get("device");
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 50) || 50, 1), 200);
   const rows = address
-    ? await env.DB.prepare("SELECT * FROM calls WHERE issuer=? AND device_address=? ORDER BY created_at DESC LIMIT ?")
+    ? await env.DB.prepare("SELECT * FROM calls WHERE caller=? AND device_address=? ORDER BY created_at DESC LIMIT ?")
         .bind(owner, address, limit)
         .all<CallRow>()
-    : await env.DB.prepare("SELECT * FROM calls WHERE issuer=? ORDER BY created_at DESC LIMIT ?")
+    : await env.DB.prepare("SELECT * FROM calls WHERE caller=? ORDER BY created_at DESC LIMIT ?")
         .bind(owner, limit)
         .all<CallRow>();
   return json({ calls: rows.results.map(callView) });
@@ -199,13 +199,13 @@ export async function listCalls(env: Env, owner: string, url: URL): Promise<Resp
 /** Returns the sealed result envelope verbatim; opening it is the browser's job. */
 export async function readCall(env: Env, owner: string, callId: string): Promise<Response> {
   const row = await callById(env, callId);
-  if (!row || row.issuer !== owner) throw new ApiError(404, "call not found");
+  if (!row || row.caller !== owner) throw new ApiError(404, "call not found");
   return json({ call: callView(row), result: row.result ? JSON.parse(row.result) : null });
 }
 
 export async function cancelCall(env: Env, owner: string, callId: string): Promise<Response> {
   const row = await callById(env, callId);
-  if (!row || row.issuer !== owner) throw new ApiError(404, "call not found");
+  if (!row || row.caller !== owner) throw new ApiError(404, "call not found");
   if (!["queued", "received"].includes(row.status)) throw new ApiError(409, "call is already settled");
   await env.DB.prepare(
     "UPDATE calls SET cancel_requested_at=?, status=CASE WHEN status='queued' THEN 'cancelled' ELSE status END, settled_at=CASE WHEN status='queued' THEN ? ELSE settled_at END WHERE call_id=?",

@@ -220,7 +220,7 @@ async function run() {
   const callId = created.call.call_id;
   const delivered = await nextEvent("call");
   assert.equal(delivered.call_id, callId);
-  assert.ok(verifyCall(delivered), "the device can verify the issuer signature");
+  assert.ok(verifyCall(delivered), "the device can verify the caller signature");
   const opened = openCall({ seed: device.seed, call: delivered });
   assert.equal(opened.name, "shell");
   assert.deepEqual(JSON.parse(opened.args), { command: "uname -a" });
@@ -288,7 +288,7 @@ async function run() {
   });
   assert.equal(strangerQueued.status, 403, "the device does not trust this address");
   assert.equal(
-    verifyCall({ ...strangerCall, issuer: browser.address }),
+    verifyCall({ ...strangerCall, caller: browser.address }),
     false,
     "and nobody can sign in the browser's name",
   );
@@ -475,7 +475,7 @@ async function run() {
   const sealedBytes = unb64u(
     seal({
       direction: "blob",
-      issuer: browser.address,
+      caller: browser.address,
       device: heavyAddress,
       callId: heavyEnvelope.call_id,
       issuedAt: heavyIssuedAt,
@@ -502,7 +502,7 @@ async function run() {
   const openedBlob = JSON.parse(
     openAttachment({
       seed: browser.identity.seed,
-      call: { call_id: heavyEnvelope.call_id, issuer: browser.address, device: heavyAddress, expires_at: heavyEnvelope.expires_at },
+      call: { call_id: heavyEnvelope.call_id, caller: browser.address, device: heavyAddress, expires_at: heavyEnvelope.expires_at },
       result: { issued_at: heavyIssuedAt },
       sealed: fetchedBlob,
     }),
@@ -538,7 +538,7 @@ async function run() {
   assert.equal(
     (await fetch(`${base}${heavyAck}`, { method: "POST", headers: signedHeaders(browser.identity, "POST", heavyAck) })).status,
     204,
-    "the issuer takes the result",
+    "the caller takes the result",
   );
   assert.equal((await fetch(`${base}${readPath}`, { headers: signedHeaders(browser.identity, "GET", readPath) })).status, 404, "the attachment goes with the call");
   assert.equal((await fetch(`${base}${heavyAck}`, { method: "POST", headers: signedHeaders(browser.identity, "POST", heavyAck) })).status, 404, "picking up twice is a no-op");
@@ -574,7 +574,7 @@ async function run() {
   // Retention: settled and old is deleted, settled and fresh is not.
   const staleId = crypto.randomUUID();
   const staleAt = now() - 40 * 60;
-  d1(`INSERT INTO calls(call_id,device_address,issuer,sealed,sig,issued_at,expires_at,status,settled_at,created_at) VALUES('${staleId}','${bulkAddress}','${browser.address}','x','x',${staleAt},${staleAt + 300},'succeeded',${staleAt},${staleAt})`);
+  d1(`INSERT INTO calls(call_id,device_address,caller,sealed,sig,issued_at,expires_at,status,settled_at,created_at) VALUES('${staleId}','${bulkAddress}','${browser.address}','x','x',${staleAt},${staleAt + 300},'succeeded',${staleAt},${staleAt})`);
   const scheduled = await fetch(`${base}/__scheduled?cron=${encodeURIComponent("41 * * * *")}`);
   assert.equal(scheduled.status, 200, "the retention cron runs");
   await assert.rejects(browser.request(base, "GET", `/api/calls/${staleId}`), /404/, "a call older than the window is gone");

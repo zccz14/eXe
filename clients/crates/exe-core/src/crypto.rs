@@ -179,10 +179,10 @@ pub fn verify(public: &[u8; 32], message: &[u8], signature: &str) -> Result<(), 
         .map_err(|_| CryptoError::Signature)
 }
 
-/// aad = direction || issuer || device || call_id || issued_at || expires_at
+/// aad = direction || caller || device || call_id || issued_at || expires_at
 pub struct SealContext<'a> {
     pub direction: &'a str,
-    pub issuer: &'a str,
+    pub caller: &'a str,
     pub device: &'a str,
     pub call_id: &'a str,
     pub issued_at: u64,
@@ -193,7 +193,7 @@ impl SealContext<'_> {
     pub fn aad(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(128);
         push_lp(&mut out, self.direction.as_bytes());
-        push_lp(&mut out, self.issuer.as_bytes());
+        push_lp(&mut out, self.caller.as_bytes());
         push_lp(&mut out, self.device.as_bytes());
         push_lp(&mut out, self.call_id.as_bytes());
         push_u64(&mut out, self.issued_at);
@@ -385,12 +385,12 @@ mod tests {
     #[test]
     fn sealing_round_trips_and_rejects_tampering() {
         let device = Identity::generate();
-        let issuer = Identity::generate();
-        let issuer_address = issuer.address();
+        let caller = Identity::generate();
+        let caller_address = caller.address();
         let device_address = device.address();
         let ctx = SealContext {
             direction: "call",
-            issuer: &issuer_address,
+            caller: &caller_address,
             device: &device_address,
             call_id: "call",
             issued_at: 1_700_000_000,
@@ -398,11 +398,11 @@ mod tests {
         };
         let sealed = seal(&ctx, &device.agreement_public(), b"hello").unwrap();
         assert_eq!(open(&ctx, &device, &sealed).unwrap(), b"hello");
-        assert!(open(&ctx, &issuer, &sealed).is_err());
+        assert!(open(&ctx, &caller, &sealed).is_err());
 
         let other = SealContext {
             direction: "call",
-            issuer: &issuer_address,
+            caller: &caller_address,
             device: &device_address,
             call_id: "other",
             issued_at: 1_700_000_000,

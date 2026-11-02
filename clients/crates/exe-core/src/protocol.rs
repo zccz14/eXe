@@ -17,7 +17,7 @@ pub struct SealedCall {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CallEnvelope {
     pub call_id: String,
-    pub issuer: String,
+    pub caller: String,
     pub device: String,
     pub issued_at: u64,
     pub expires_at: u64,
@@ -30,7 +30,7 @@ impl CallEnvelope {
         let mut out = Vec::with_capacity(256);
         out.extend_from_slice(b"eXe/call\0");
         push_lp(&mut out, self.call_id.as_bytes());
-        push_lp(&mut out, self.issuer.as_bytes());
+        push_lp(&mut out, self.caller.as_bytes());
         push_lp(&mut out, self.device.as_bytes());
         push_u64(&mut out, self.issued_at);
         push_u64(&mut out, self.expires_at);
@@ -40,10 +40,10 @@ impl CallEnvelope {
 
     /// Signature, trust, audience and freshness — all before anything is decrypted.
     pub fn verify(&self, trust: &[String], device: &str, now: u64) -> Result<(), VerifyError> {
-        let issuer = parse_address(&self.issuer).map_err(|_| VerifyError::Malformed)?;
+        let caller = parse_address(&self.caller).map_err(|_| VerifyError::Malformed)?;
         let transcript = self.transcript().map_err(|_| VerifyError::Malformed)?;
-        verify(&issuer, &transcript, &self.sig).map_err(|_| VerifyError::Signature)?;
-        if !trust.iter().any(|allowed| allowed == &self.issuer) {
+        verify(&caller, &transcript, &self.sig).map_err(|_| VerifyError::Signature)?;
+        if !trust.iter().any(|allowed| allowed == &self.caller) {
             return Err(VerifyError::Untrusted);
         }
         if self.device != device {
@@ -70,10 +70,10 @@ impl CallEnvelope {
         expires_at: u64,
     ) -> Result<Self, CryptoError> {
         let recipient = crate::crypto::agreement_public_of(&parse_address(device)?)?;
-        let issuer = identity.address();
+        let caller = identity.address();
         let ctx = SealContext {
             direction: "call",
-            issuer: &issuer,
+            caller: &caller,
             device,
             call_id,
             issued_at,
@@ -82,7 +82,7 @@ impl CallEnvelope {
         let sealed = crate::crypto::seal(&ctx, &recipient, plaintext)?;
         let mut envelope = Self {
             call_id: call_id.to_owned(),
-            issuer,
+            caller,
             device: device.to_owned(),
             issued_at,
             expires_at,
@@ -97,7 +97,7 @@ impl CallEnvelope {
     pub fn open(&self, identity: &Identity) -> Result<SealedCall, VerifyError> {
         let ctx = SealContext {
             direction: "call",
-            issuer: &self.issuer,
+            caller: &self.caller,
             device: &self.device,
             call_id: &self.call_id,
             issued_at: self.issued_at,
@@ -113,9 +113,9 @@ impl CallEnvelope {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum VerifyError {
-    #[error("signature does not verify against the issuer address")]
+    #[error("signature does not verify against the caller address")]
     Signature,
-    #[error("issuer is not in this device's trust list")]
+    #[error("caller is not in this device's trust list")]
     Untrusted,
     #[error("call is addressed to another device")]
     WrongDevice,
@@ -129,7 +129,7 @@ pub enum VerifyError {
     Sealed,
 }
 
-/// Device → issuer: the outcome, sealed to the issuer and signed by the device.
+/// Device → caller: the outcome, sealed to the caller and signed by the device.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResultEnvelope {
     pub call_id: String,
@@ -159,11 +159,11 @@ impl ResultEnvelope {
         plaintext: &str,
         issued_at: u64,
     ) -> Result<Self, CryptoError> {
-        let recipient = parse_address(&call.issuer)?;
+        let recipient = parse_address(&call.caller)?;
         let recipient = crate::crypto::agreement_public_of(&recipient)?;
         let ctx = SealContext {
             direction: "result",
-            issuer: &call.issuer,
+            caller: &call.caller,
             device: &call.device,
             call_id: &call.call_id,
             issued_at,
@@ -188,7 +188,7 @@ impl ResultEnvelope {
     pub fn open(&self, identity: &Identity, call: &CallEnvelope) -> Result<Vec<u8>, CryptoError> {
         let ctx = SealContext {
             direction: "result",
-            issuer: &call.issuer,
+            caller: &call.caller,
             device: &call.device,
             call_id: &call.call_id,
             issued_at: self.issued_at,
@@ -215,11 +215,11 @@ pub fn seal_blob(
     plaintext: &[u8],
     issued_at: u64,
 ) -> Result<Vec<u8>, CryptoError> {
-    let recipient = parse_address(&call.issuer)?;
+    let recipient = parse_address(&call.caller)?;
     let recipient = crate::crypto::agreement_public_of(&recipient)?;
     let ctx = SealContext {
         direction: "blob",
-        issuer: &call.issuer,
+        caller: &call.caller,
         device: &call.device,
         call_id: &call.call_id,
         issued_at,
@@ -237,7 +237,7 @@ pub fn open_blob(
 ) -> Result<Vec<u8>, CryptoError> {
     let ctx = SealContext {
         direction: "blob",
-        issuer: &call.issuer,
+        caller: &call.caller,
         device: &call.device,
         call_id: &call.call_id,
         issued_at: result_issued_at,
@@ -356,7 +356,7 @@ mod tests {
     fn call(v: &serde_json::Value) -> CallEnvelope {
         CallEnvelope {
             call_id: v["call"]["call_id"].as_str().unwrap().into(),
-            issuer: v["call"]["issuer"].as_str().unwrap().into(),
+            caller: v["call"]["caller"].as_str().unwrap().into(),
             device: v["call"]["device"].as_str().unwrap().into(),
             issued_at: v["call"]["issued_at"].as_u64().unwrap(),
             expires_at: v["call"]["expires_at"].as_u64().unwrap(),
@@ -368,11 +368,11 @@ mod tests {
     #[test]
     fn call_vectors_cover_the_sealed_envelope() {
         let v = vector();
-        let issuer = seed(v["keys"]["issuer_seed"].as_str().unwrap());
+        let caller = seed(v["keys"]["caller_seed"].as_str().unwrap());
         let device = seed(v["keys"]["device_seed"].as_str().unwrap());
         assert_eq!(
-            issuer.address(),
-            v["keys"]["issuer_address"].as_str().unwrap()
+            caller.address(),
+            v["keys"]["caller_address"].as_str().unwrap()
         );
         assert_eq!(
             device.address(),
@@ -384,7 +384,7 @@ mod tests {
             sha256_hex(&call.transcript().unwrap()),
             v["call"]["transcript_sha256"].as_str().unwrap()
         );
-        let trust = vec![issuer.address()];
+        let trust = vec![caller.address()];
         call.verify(&trust, &device.address(), call.issued_at + 1)
             .expect("vector signature verifies");
         assert_eq!(
@@ -415,16 +415,16 @@ mod tests {
             serde_json::from_str(v["call"]["plaintext"].as_str().unwrap()).unwrap();
         assert_eq!(sealed.name, plain["name"].as_str().unwrap());
         assert_eq!(sealed.args, plain["args"].as_str().unwrap());
-        assert!(call.open(&issuer).is_err(), "another key cannot open it");
+        assert!(call.open(&caller).is_err(), "another key cannot open it");
 
         let wire = serde_json::to_string(&call).unwrap();
         assert!(!wire.contains("shell"), "no tool name on the wire");
     }
 
     #[test]
-    fn result_vectors_open_only_with_the_issuer_key() {
+    fn result_vectors_open_only_with_the_caller_key() {
         let v = vector();
-        let issuer = seed(v["keys"]["issuer_seed"].as_str().unwrap());
+        let caller = seed(v["keys"]["caller_seed"].as_str().unwrap());
         let device = seed(v["keys"]["device_seed"].as_str().unwrap());
         let call = call(&v);
         let result = ResultEnvelope {
@@ -445,13 +445,13 @@ mod tests {
 
         let ctx = SealContext {
             direction: "result",
-            issuer: &call.issuer,
+            caller: &call.caller,
             device: &call.device,
             call_id: &call.call_id,
             issued_at: result.issued_at,
             expires_at: call.expires_at,
         };
-        let opened = crate::crypto::open(&ctx, &issuer, &result.sealed).unwrap();
+        let opened = crate::crypto::open(&ctx, &caller, &result.sealed).unwrap();
         assert_eq!(
             String::from_utf8(opened).unwrap(),
             v["result"]["plaintext"].as_str().unwrap()

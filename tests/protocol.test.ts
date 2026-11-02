@@ -33,17 +33,17 @@ import {
 } from "../shared/protocol.ts";
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 
-const issuer = identityFromSeed(unhex(vectors.keys.issuer_seed));
+const caller = identityFromSeed(unhex(vectors.keys.caller_seed));
 const device = identityFromSeed(unhex(vectors.keys.device_seed));
 
 test("an address is a base58 Ed25519 public key and the secret round trips", () => {
-  assert.equal(addressOf(issuer), vectors.keys.issuer_address);
+  assert.equal(addressOf(caller), vectors.keys.caller_address);
   assert.equal(addressOf(device), vectors.keys.device_address);
-  assert.equal(addressOf(issuer).length, 44);
-  assert.ok(isAddress(vectors.keys.issuer_address));
+  assert.equal(addressOf(caller).length, 44);
+  assert.ok(isAddress(vectors.keys.caller_address));
   assert.equal(isAddress("not-an-address"), false);
   assert.equal(isAddress(""), false);
-  assert.equal(isAddress(vectors.keys.issuer_seed), false, "hex is not an address");
+  assert.equal(isAddress(vectors.keys.caller_seed), false, "hex is not an address");
 
   const secret = encodeSecret(device);
   const restored = decodeSecret(secret);
@@ -74,7 +74,7 @@ test("HSalsa20 matches the reference vector", () => {
 test("the call vector signs and verifies, and any edit breaks it", () => {
   const call = {
     call_id: vectors.call.call_id,
-    issuer: vectors.call.issuer,
+    caller: vectors.call.caller,
     device: vectors.call.device,
     issued_at: vectors.call.issued_at,
     expires_at: vectors.call.expires_at,
@@ -83,17 +83,17 @@ test("the call vector signs and verifies, and any edit breaks it", () => {
   };
   assert.equal(sha256Hex(callTranscript(call)), vectors.call.transcript_sha256);
   assert.ok(verifyCall(call));
-  assert.equal(call.sig, signCall(issuer.seed, call));
+  assert.equal(call.sig, signCall(caller.seed, call));
   assert.equal(verifyCall({ ...call, sig: call.sig.slice(0, -1) + (call.sig.endsWith("a") ? "b" : "a") }), false);
   assert.equal(verifyCall({ ...call, device: addressOf(newIdentity()) }), false);
   assert.equal(verifyCall({ ...call, expires_at: call.expires_at + 1 }), false);
-  assert.equal(verifyCall({ ...call, issuer: vectors.keys.device_address }), false, "the device cannot speak for the issuer");
+  assert.equal(verifyCall({ ...call, caller: vectors.keys.device_address }), false, "the device cannot speak for the caller");
 });
 
 test("only the device opens its command and the wire names nothing", () => {
   const call = {
     call_id: vectors.call.call_id,
-    issuer: vectors.call.issuer,
+    caller: vectors.call.caller,
     device: vectors.call.device,
     issued_at: vectors.call.issued_at,
     expires_at: vectors.call.expires_at,
@@ -102,7 +102,7 @@ test("only the device opens its command and the wire names nothing", () => {
   };
   const opened = openCall({ seed: device.seed, call });
   assert.equal(JSON.stringify(opened), vectors.call.plaintext);
-  assert.throws(() => openCall({ seed: issuer.seed, call }), "another key cannot open it");
+  assert.throws(() => openCall({ seed: caller.seed, call }), "another key cannot open it");
 
   const wire = JSON.stringify({ ...call, sealed: undefined }) + vectors.call.sealed;
   assert.equal(wire.includes("shell"), false, "no tool name on the wire");
@@ -113,10 +113,10 @@ test("only the device opens its command and the wire names nothing", () => {
   assert.throws(() => openCall({ seed: device.seed, call: { ...call, expires_at: call.expires_at + 1 } }));
 });
 
-test("the result vector is sealed to the issuer and signed by the device", () => {
+test("the result vector is sealed to the caller and signed by the device", () => {
   const call = {
     call_id: vectors.call.call_id,
-    issuer: vectors.call.issuer,
+    caller: vectors.call.caller,
     device: vectors.call.device,
     expires_at: vectors.call.expires_at,
   };
@@ -130,10 +130,10 @@ test("the result vector is sealed to the issuer and signed by the device", () =>
   };
   assert.equal(sha256Hex(resultTranscript(result)), vectors.result.transcript_sha256);
   assert.ok(verifyResult(result));
-  assert.equal(openResult({ seed: issuer.seed, call, result }), vectors.result.plaintext);
+  assert.equal(openResult({ seed: caller.seed, call, result }), vectors.result.plaintext);
   assert.throws(() => openResult({ seed: device.seed, call, result }), "the device cannot read it back");
   assert.equal(verifyResult({ ...result, ok: false }), false, "the outcome is signed, not decorative");
-  assert.equal(verifyResult({ ...result, device: vectors.keys.issuer_address }), false);
+  assert.equal(verifyResult({ ...result, device: vectors.keys.caller_address }), false);
 });
 
 test("device requests are self-signed over method, path, address and time", () => {
@@ -148,7 +148,7 @@ test("device requests are self-signed over method, path, address and time", () =
   assert.equal(verifyRequest({ ...auth, method: "GET" }, vectors.request.sig), false);
   assert.equal(verifyRequest({ ...auth, path: auth.path.replace("/result", "/received") }, vectors.request.sig), false);
   assert.equal(verifyRequest({ ...auth, timestamp: auth.timestamp + 1 }, vectors.request.sig), false);
-  assert.equal(verifyRequest({ ...auth, address: vectors.keys.issuer_address }, vectors.request.sig), false);
+  assert.equal(verifyRequest({ ...auth, address: vectors.keys.caller_address }, vectors.request.sig), false);
   assert.equal(JSON.stringify(vectors).match(/seed32|private/i), null, "vectors carry seeds for testing only, never secrets from production");
 });
 
@@ -156,8 +156,8 @@ test("sealing is randomized but still opens", () => {
   const callId = "11111111-1111-4111-8111-111111111111";
   const make = () =>
     buildCall({
-      seed: issuer.seed,
-      issuer: addressOf(issuer),
+      seed: caller.seed,
+      caller: addressOf(caller),
       device: addressOf(device),
       callId,
       name: "shell",
@@ -187,7 +187,7 @@ test("a sealed payload carries a fixed header", () => {
 test("a result built after the fact cannot be swapped between calls", () => {
   const call = {
     call_id: vectors.call.call_id,
-    issuer: vectors.call.issuer,
+    caller: vectors.call.caller,
     device: vectors.call.device,
     issued_at: vectors.call.issued_at,
     expires_at: vectors.call.expires_at,
@@ -196,7 +196,7 @@ test("a result built after the fact cannot be swapped between calls", () => {
   };
   const result = buildResult({ seed: device.seed, call, ok: false, plaintext: '{"ok":false,"code":"spawn_failed"}', issuedAt: 1_700_000_010 });
   assert.equal(verifyResult(result), true);
-  assert.equal(openResult({ seed: issuer.seed, call, result }), '{"ok":false,"code":"spawn_failed"}');
+  assert.equal(openResult({ seed: caller.seed, call, result }), '{"ok":false,"code":"spawn_failed"}');
   const other = { ...call, call_id: "22222222-2222-4222-8222-222222222222", expires_at: call.expires_at + 60 };
-  assert.throws(() => openResult({ seed: issuer.seed, call: other, result }), "aAD binds the result to the call");
+  assert.throws(() => openResult({ seed: caller.seed, call: other, result }), "aAD binds the result to the call");
 });
