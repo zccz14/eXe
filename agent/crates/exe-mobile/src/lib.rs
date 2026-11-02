@@ -168,7 +168,7 @@ mod android {
             Err(_) => return std::ptr::null_mut(),
         };
         std::env::set_var("EXE_CONFIG_DIR", &dir);
-        match config::load_or_create().and_then(|(cfg, _)| cfg.address()) {
+        match crate::config::load_or_create().and_then(|(cfg, _)| cfg.address()) {
             Ok(address) => match env.new_string(address) {
                 Ok(value) => value.into_raw(),
                 Err(_) => std::ptr::null_mut(),
