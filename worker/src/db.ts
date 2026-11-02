@@ -18,7 +18,6 @@ export const REQUEST_WINDOW_SECONDS = 300;
 /** A device that has ever registered itself. The relay knows nothing else about it. */
 export interface DeviceRow {
   address: string;
-  hostname: string;
   platform: string;
   version: string;
   /** Comma-separated addresses the device says it trusts. Empty means "nobody". */
@@ -64,7 +63,6 @@ export async function callById(env: Env, callId: string): Promise<CallRow | null
 }
 
 export interface DeviceInfo {
-  hostname: string;
   platform: string;
   version: string;
   trust: string;
@@ -95,15 +93,14 @@ export async function abandonOrphans(env: Env, address: string, runId: string): 
 export async function touchDevice(env: Env, address: string, info?: DeviceInfo): Promise<void> {
   const stamp = now();
   if (info) {
-    const hostname = info.hostname.slice(0, 80);
     const platform = info.platform.slice(0, 40);
     const version = info.version.slice(0, 20);
     await env.DB.prepare(
-      "INSERT INTO devices(address,hostname,platform,version,trust,run_id,run_started_at,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?) " +
-        "ON CONFLICT(address) DO UPDATE SET hostname=excluded.hostname, platform=excluded.platform, version=excluded.version, " +
+      "INSERT INTO devices(address,platform,version,trust,run_id,run_started_at,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?) " +
+        "ON CONFLICT(address) DO UPDATE SET platform=excluded.platform, version=excluded.version, " +
         "trust=excluded.trust, run_id=excluded.run_id, run_started_at=excluded.run_started_at, last_seen_at=excluded.last_seen_at",
     )
-      .bind(address, hostname, platform, version, info.trust, info.run_id, info.run_started_at, stamp, stamp)
+      .bind(address, platform, version, info.trust, info.run_id, info.run_started_at, stamp, stamp)
       .run();
     return;
   }

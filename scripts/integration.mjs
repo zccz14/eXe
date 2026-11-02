@@ -25,7 +25,6 @@ async function registerDevice(identity, trust = [], runId = "run-1") {
     method: "PUT",
     headers: { ...signedHeaders(identity, "PUT", path), "content-type": "application/json" },
     body: JSON.stringify({
-      hostname: "integration-host",
       platform: "linux-x86_64",
       version: "0.3.0",
       trust: trust.join(","),
@@ -123,12 +122,11 @@ async function run() {
   const unknown = await browser.request(base, "GET", `/api/devices/${deviceAddress}`);
   assert.equal(unknown.registered, false, "an address that never checked in is unknown, not an error");
   assert.equal(unknown.online, false);
-  assert.equal(unknown.hostname, null, "the relay knows nothing about it yet");
+  assert.equal(unknown.platform, null, "the relay knows nothing about it yet");
 
   // --- the device self-registers: one signed request, single-use nonce -----
   const regPath = `/v1/devices/${deviceAddress}`;
   const regBody = JSON.stringify({
-    hostname: "integration-host",
     platform: "linux-x86_64",
     version: "0.3.0",
     trust: browser.address,
@@ -174,7 +172,7 @@ async function run() {
 
   const online = await browser.request(base, "GET", `/api/devices/${deviceAddress}`);
   assert.equal(online.online, true);
-  assert.equal(online.hostname, "integration-host");
+  assert.equal(online.platform, "linux-x86_64");
   assert.equal(online.run_id, "run-1", "the relay can tell which process is behind the address");
   assert.ok(online.run_started_at, "and when it started");
 

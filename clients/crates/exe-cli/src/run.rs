@@ -119,7 +119,6 @@ impl Client {
             self.client
                 .put(format!("{}{path}", self.cloud))
                 .json(&serde_json::json!({
-                    "hostname": config::hostname(),
                     "platform": config::platform(),
                     "version": env!("CARGO_PKG_VERSION"),
                     // The relay gets a copy of who this device trusts so it can

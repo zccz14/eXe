@@ -13,7 +13,7 @@ import { addressOf, decodeSecret } from "../shared/protocol.ts";
 const PORT = 8787;
 const base = `http://127.0.0.1:${PORT}`;
 const configDir = mkdtempSync(join(tmpdir(), "exe-smoke-"));
-const clientEnv = () => ({ ...process.env, EXE_CONFIG_DIR: configDir, EXE_CLOUD: base, EXE_HOSTNAME: "smoke-host", RUST_LOG: "info" });
+const clientEnv = () => ({ ...process.env, EXE_CONFIG_DIR: configDir, EXE_CLOUD: base, RUST_LOG: "info" });
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -76,11 +76,12 @@ async function main() {
 
     const seen = () => browser.request(base, "GET", `/api/devices/${deviceAddress}`);
     for (let attempt = 0; attempt < 40 && !(await seen()).online; attempt += 1) await wait(250);
-    // The relay learns hostname/platform/version from the device's own signed
-    // registration, so no `sysinfo` verb is needed to display them.
+    // The relay learns platform/version from the device's own signed
+    // registration, so no `sysinfo` verb is needed to display them. It learns
+    // nothing about the machine itself — there is no hostname on the wire.
     const listed = await seen();
     assert.equal(listed.registered, true);
-    assert.equal(listed.hostname, "smoke-host");
+    assert.match(listed.platform, /^(macos|linux|windows)-[a-z0-9_]+$/, "the relay learns the platform from the device itself");
     assert.equal(listed.online, true);
 
     const settle = async (callId) => {

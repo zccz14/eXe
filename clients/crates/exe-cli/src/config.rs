@@ -18,13 +18,6 @@ pub struct Config {
     /// only the human at this machine decides who is on the list.
     #[serde(default)]
     pub trust: Vec<String>,
-    /// Cosmetic name shown in the console once the address is added there.
-    #[serde(default = "default_label")]
-    pub label: String,
-}
-
-fn default_label() -> String {
-    hostname()
 }
 
 impl Config {
@@ -84,7 +77,6 @@ pub fn load_or_create() -> Result<(Config, bool)> {
                     .to_owned(),
                 secret: Identity::generate().secret(),
                 trust: Vec::new(),
-                label: hostname(),
             };
             save(&config)?;
             Ok((config, true))
@@ -105,18 +97,6 @@ pub fn save(config: &Config) -> Result<()> {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
-}
-
-pub fn hostname() -> String {
-    std::env::var("EXE_HOSTNAME")
-        .ok()
-        .or_else(|| {
-            std::fs::read_to_string("/etc/hostname")
-                .ok()
-                .map(|value| value.trim().to_owned())
-        })
-        .or_else(|| std::env::var("COMPUTERNAME").ok())
-        .unwrap_or_else(|| "unknown-host".into())
 }
 
 pub fn platform() -> String {

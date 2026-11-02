@@ -144,7 +144,7 @@ export function DevicePage() {
             <h1 className="text-xl font-semibold">{entry.label}</h1>
             <p className="font-mono text-xs text-muted-foreground">{entry.address}</p>
             <p className="text-sm text-muted-foreground">
-              {[device?.hostname, device?.platform, device?.version].filter(Boolean).join(" · ") || t("never_seen")}
+              {[device?.platform, device?.version].filter(Boolean).join(" · ") || t("never_seen")}
             </p>
           </div>
           <div className="flex items-center gap-2">

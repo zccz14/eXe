@@ -33,7 +33,6 @@ function requireAddress(value: unknown, field: string): string {
 export interface DeviceStatus {
   address: string;
   registered: boolean;
-  hostname: string | null;
   platform: string | null;
   version: string | null;
   /** The `exe run` process currently behind this address. A change means a restart. */
@@ -85,7 +84,6 @@ export async function deviceStatus(env: Env, address: string): Promise<Response>
   const status: DeviceStatus = {
     address,
     registered: row !== null,
-    hostname: row?.hostname ?? null,
     platform: row?.platform ?? null,
     version: row?.version ?? null,
     run_id: row?.run_id ?? null,
