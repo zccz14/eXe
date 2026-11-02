@@ -46,6 +46,10 @@ struct Agent {
     cloud: String,
     identity: Identity,
     trust: Vec<String>,
+    /// This process, not this device: a restart changes it. The relay uses it to
+    /// tell "the process that took your call is gone" from "it is still working",
+    /// and to refuse to re-deliver a call whose side effects may already exist.
+    run_id: String,
     tasks: Tasks,
     results: Arc<Mutex<ResultCache>>,
 }
@@ -73,6 +77,7 @@ pub async fn run(config: Config) -> Result<()> {
         cloud: config.cloud.clone(),
         identity,
         trust: config.trust.clone(),
+        run_id: uuid::Uuid::now_v7().to_string(),
         tasks: Arc::default(),
         results: Arc::default(),
     };
@@ -117,6 +122,11 @@ impl Agent {
                     "hostname": config::hostname(),
                     "platform": config::platform(),
                     "version": env!("CARGO_PKG_VERSION"),
+                    // The relay gets a copy of who this device trusts so it can
+                    // drop calls the device would refuse anyway. The copy can only
+                    // make it send less; this process still checks every call.
+                    "trust": self.trust.join(","),
+                    "run_id": self.run_id.as_str(),
                 })),
             &self.identity,
             "PUT",

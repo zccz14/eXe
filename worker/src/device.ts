@@ -6,9 +6,9 @@
 // connection, not a row in the database. The only proof of delivery the relay
 // ever records is the device's own signed receipt, which arrives as a separate
 // request (see docs/PROTOCOL.md §4).
-import { verifyResult, type CallEnvelope, type ResultEnvelope } from "../../shared/protocol.ts";
+import { isAddress, verifyResult, type CallEnvelope, type ResultEnvelope } from "../../shared/protocol.ts";
 import type { CallRow, Env } from "./db.ts";
-import { authenticateDevice, callById, touchDevice } from "./db.ts";
+import { abandonOrphans, authenticateDevice, callById, deviceByAddress, touchDevice } from "./db.ts";
 import { ApiError, body, empty, json, now } from "./http.ts";
 
 const STREAM_MAX_SECONDS = 900;
@@ -16,6 +16,8 @@ const DEVICE_OFFLINE_SECONDS = 90;
 /** How long a connection waits before handing the same call over again. */
 const RESEND_AFTER_SECONDS = 120;
 const PENDING_LIMIT = 16;
+/** A device never needs to trust more issuers than this. */
+const MAX_TRUST_ENTRIES = 64;
 
 function text(value: unknown, field: string, max: number): string {
   if (typeof value !== "string") throw new ApiError(400, `${field} is required`);
@@ -33,20 +35,55 @@ async function sweep(env: Env, address: string): Promise<void> {
     .run();
 }
 
+/**
+ * The device declares who it trusts. The relay keeps a copy so it can drop calls
+ * the device would refuse anyway — a stranger's envelope then costs the device
+ * nothing, not even a signature check. The copy can only ever make the relay
+ * send *less*: it is refreshed on restart, so it is never fresher than the
+ * device's own config, and the device still checks every call itself.
+ */
+function trustList(input: unknown): string {
+  if (typeof input !== "string") throw new ApiError(400, "trust is required (comma-separated, may be empty)");
+  const unique = [...new Set(input.split(",").map((entry) => entry.trim()).filter(Boolean))];
+  if (unique.length > MAX_TRUST_ENTRIES) throw new ApiError(400, `trust may name at most ${MAX_TRUST_ENTRIES} addresses`);
+  if (unique.some((entry) => !isAddress(entry))) throw new ApiError(400, "trust contains entries that are not eXe addresses");
+  return unique.join(",");
+}
+
+/** One `exe run` process. A new value means the process restarted. */
+function runId(value: unknown): string {
+  if (typeof value !== "string") throw new ApiError(400, "run_id is required");
+  const trimmed = value.trim();
+  if (!/^[0-9a-zA-Z-]{4,64}$/.test(trimmed)) throw new ApiError(400, "run_id must be 4-64 url-safe characters");
+  return trimmed;
+}
+
 export async function registerDevice(request: Request, env: Env, address: string): Promise<Response> {
   await authenticateDevice({ request, env, address });
   const input = await body<Record<string, unknown>>(request);
-  const info = {
+  const trust = trustList(input.trust);
+  const run = runId(input.run_id);
+  const previous = await deviceByAddress(env, address);
+  const restarted = previous !== null && previous.run_id !== run;
+  const startedAt = previous === null || restarted ? now() : previous.run_started_at;
+  await touchDevice(env, address, {
     hostname: text(input.hostname, "hostname", 80),
     platform: text(input.platform, "platform", 40),
     version: text(input.version, "version", 20),
-  };
-  await touchDevice(env, address, info);
+    trust,
+    run_id: run,
+    run_started_at: startedAt,
+  });
+  const abandoned = restarted ? await abandonOrphans(env, address, run) : 0;
   return json({
     address,
     now: now(),
     offline_after_seconds: DEVICE_OFFLINE_SECONDS,
     stream_max_seconds: STREAM_MAX_SECONDS,
+    run_id: run,
+    run_started_at: startedAt,
+    trust: trust === "" ? [] : trust.split(","),
+    abandoned,
   });
 }
 
@@ -164,10 +201,14 @@ function sleep(ms: number): Promise<void> {
  */
 export async function markReceived(request: Request, env: Env, address: string, callId: string): Promise<Response> {
   await authenticateDevice({ request, env, address });
+  // The stamping run is the one the relay believes is behind this address: the
+  // receipt itself stays unchanged, so a restart is the only thing that can make
+  // this column disagree with `devices.run_id` later.
   const result = await env.DB.prepare(
-    "UPDATE calls SET status='received', received_at=? WHERE call_id=? AND device_address=? AND status IN ('queued','received')",
+    "UPDATE calls SET status='received', received_at=?, device_run_id=(SELECT run_id FROM devices WHERE address=?) " +
+      "WHERE call_id=? AND device_address=? AND status IN ('queued','received')",
   )
-    .bind(now(), callId, address)
+    .bind(now(), address, callId, address)
     .run();
   if (result.meta.changes === 0) throw new ApiError(409, "call is not awaiting a receipt");
   return empty();
@@ -204,12 +245,14 @@ export async function submitResult(request: Request, env: Env, address: string, 
     if (call.result === canonical) return empty();
     throw new ApiError(409, "call is already settled with a different result");
   }
-  if (!["queued", "received"].includes(call.status)) throw new ApiError(409, `call is ${call.status}`);
+  // `lost` is accepted too: a signed outcome outranks the relay's guess that the
+  // process died before answering. A lost receipt must never block a real result
+  // either — a call that is merely `queued` is settled because the device clearly
+  // has it.
+  if (!["queued", "received", "lost"].includes(call.status)) throw new ApiError(409, `call is ${call.status}`);
 
-  // A lost receipt must never block a real outcome: a result signed for a call
-  // that is merely `queued` is accepted, because the device clearly has it.
   await env.DB.prepare(
-    "UPDATE calls SET result=?, status=?, settled_at=? WHERE call_id=? AND status IN ('queued','received')",
+    "UPDATE calls SET result=?, status=?, settled_at=? WHERE call_id=? AND status IN ('queued','received','lost')",
   )
     .bind(canonical, result.ok ? "succeeded" : "failed", now(), callId)
     .run();

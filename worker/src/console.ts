@@ -8,7 +8,7 @@
 // anyway, because a device decides by its own `trust` list (docs/SOUL.md §9).
 import { isAddress, verifyCall, type CallEnvelope } from "../../shared/protocol.ts";
 import type { CallRow, Env } from "./db.ts";
-import { callById, deviceByAddress } from "./db.ts";
+import { callById, deviceByAddress, trustList } from "./db.ts";
 import { ApiError, body, empty, json, now } from "./http.ts";
 
 const OFFLINE_AFTER_SECONDS = 90;
@@ -36,6 +36,9 @@ export interface DeviceStatus {
   hostname: string | null;
   platform: string | null;
   version: string | null;
+  /** The `exe run` process currently behind this address. A change means a restart. */
+  run_id: string | null;
+  run_started_at: number | null;
   online: boolean;
   last_seen_at: number | null;
 }
@@ -85,6 +88,8 @@ export async function deviceStatus(env: Env, address: string): Promise<Response>
     hostname: row?.hostname ?? null,
     platform: row?.platform ?? null,
     version: row?.version ?? null,
+    run_id: row?.run_id ?? null,
+    run_started_at: row?.run_started_at ?? null,
     online: lastSeen !== null && lastSeen > now() - OFFLINE_AFTER_SECONDS,
     last_seen_at: lastSeen,
   };
@@ -112,8 +117,16 @@ export async function createCall(env: Env, owner: string, address: string, reque
   if (expiresAt <= now()) throw new ApiError(400, "call already expired");
   if (expiresAt - issuedAt > MAX_CALL_TTL_SECONDS) throw new ApiError(400, "a call may not live longer than one hour");
 
+  const deviceRow = await deviceByAddress(env, address);
+  if (!deviceRow) throw new ApiError(404, "no device has registered this address");
+
   const row: CallEnvelope = { call_id: callId, issuer, device, issued_at: issuedAt, expires_at: expiresAt, sealed, sig };
-  if (!verifyCall(row)) throw new ApiError(403, "call signature does not verify against the issuing address");
+  // Cheap check first: an address the device does not trust is refused by a
+  // string comparison, so the relay never hashes 96 KiB of ciphertext on behalf
+  // of a stranger. Both refusals answer identically on purpose — "does device D
+  // trust address X" is not a question the relay should answer.
+  const accepted = trustList(deviceRow.trust).includes(issuer);
+  if (!accepted || !verifyCall(row)) throw new ApiError(403, "the relay will not queue this call");
 
   // The primary key is the replay defence: the same signed envelope sent twice
   // queues once. There is no address-book gate — it never stopped anyone.
