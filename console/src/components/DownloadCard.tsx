@@ -62,7 +62,9 @@ export function DownloadCard() {
         </div>
       ) : (
         <div className="space-y-1 text-sm">
-          <p className="text-muted-foreground">{releases.isLoading ? "…" : t("download_empty")}</p>
+          <p className="text-muted-foreground">
+            {releases.isLoading ? "…" : data?.configured ? t("download_empty") : t("download_hint")}
+          </p>
           <a className="underline underline-offset-4" href={data?.release_url ?? "https://github.com/zccz14/eXe/releases/latest"}>
             {t("download_fallback")}
           </a>
