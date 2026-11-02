@@ -7,7 +7,7 @@
     "directory": "console/dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/v1/*"]
+    "run_worker_first": ["/api/*", "/v1/*", "/download/*"]
   },
   "d1_databases": [
     {
@@ -19,7 +19,8 @@
   "vars": {
     "AUTH_ISSUER": "https://auth.ntnl.io",
     "AUTH_AUDIENCE": "exe.ntnl.io",
-    "CONSOLE_ORIGINS": "https://exe-console.pages.dev"
+    "CONSOLE_ORIGINS": "https://exe-console.pages.dev",
+    "GITHUB_REPO": "zccz14/eXe"
   },
   "routes": [{ "pattern": "exe.ntnl.io", "custom_domain": true }],
   "observability": { "enabled": true }

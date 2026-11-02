@@ -17,6 +17,18 @@ async function token(sdk: SdkLike): Promise<string> {
 /** The console is a static Pages app; the relay lives on its own origin. */
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
 
+/** Absolute URL on the relay, for plain links (downloads, redirects). */
+export function apiUrl(path: string): string {
+  return `${API_BASE}${path}`;
+}
+
+/** Endpoints that need no AuthMini token, such as release metadata. */
+export async function publicApi<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`);
+  if (!response.ok) throw new Error(`${response.status}`);
+  return (await response.json()) as T;
+}
+
 export async function api<T>(sdk: SdkLike, path: string, init: RequestInit = {}): Promise<T> {
   const send = async (bearer: string) =>
     fetch(`${API_BASE}${path}`, {
@@ -83,4 +95,20 @@ export interface SealedEnvelope {
 export interface CallDetail {
   call: CallView;
   result: SealedEnvelope | null;
+}
+
+export interface ReleaseAsset {
+  name: string;
+  size: number;
+  url: string;
+}
+
+export interface LatestRelease {
+  configured: boolean;
+  repository: string;
+  version: string | null;
+  tag: string | null;
+  published_at: string | null;
+  release_url: string;
+  assets: ReleaseAsset[];
 }

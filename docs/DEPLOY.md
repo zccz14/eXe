@@ -70,6 +70,26 @@ pnpm version:check           # CI 跑这个；有任何漂移就失败
 发布走 GitHub Release：打 `v<version>` tag 触发 `release.yml`，它先校验 tag 与
 `package.json` 一致，再交叉编译五平台产物并发布。
 
+## 客户端下载
+
+二进制发布在 **GitHub Release**：打 `v<version>` tag 触发 `release.yml`，交叉编译五平台、
+打包、算 SHA-256，发布到 Release。版本号必须与 `package.json` 一致（workflow 会校验）。
+
+控制台的「下载客户端」读 `GET /api/releases/latest`：
+
+- 配了 `GITHUB_RELEASES_TOKEN` → Worker 解析最新 Release，`/download/<asset>` 代理下载，
+  控制台直接给出各平台按钮；
+- 没配 → 只返回 Release 页面地址，控制台退化成「在 GitHub 上查看」的链接。
+
+仓库是私有的，所以代理需要一个 **fine-grained PAT（仅此仓库，Contents: Read）**：
+
+```sh
+wrangler secret put GITHUB_RELEASES_TOKEN
+```
+
+公开仓库可以跳过这一步（未认证的 GitHub API 也能读到 Release）。
+下载端点不需要登录：`<a href>` 拿不到 Authorization 头，二进制本身也不是秘密。
+
 ## 日常发布
 
 ```sh

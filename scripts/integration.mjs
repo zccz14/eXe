@@ -75,6 +75,13 @@ async function main() {
 }
 
 async function run() {
+  // --- client binaries come from the latest GitHub Release -----------------
+  const releases = await fetch(`${base}/api/releases/latest`).then((r) => r.json());
+  assert.equal(releases.configured, false, "no GitHub token is configured in tests");
+  assert.deepEqual(releases.assets, []);
+  assert.match(releases.release_url, /github\.com\/zccz14\/eXe\/releases\/latest/);
+  assert.equal((await fetch(`${base}/download/exe-aarch64-apple-darwin.tar.gz`)).status, 404, "nothing to download without a release");
+
   // --- the browser owns the only account key ------------------------------
   const userId = randomUUID();
   const auth = { authorization: `Bearer ${jwks.mint(userId)}` };

@@ -4,6 +4,7 @@ import { useAuthMini } from "auth-mini-react-components";
 import { ChevronRightIcon, PlusIcon, TerminalIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { api, type DeviceView } from "../api";
+import { DownloadCard } from "../components/DownloadCard";
 import { useCopy } from "../i18n";
 import { Badge, Button, Card, Input, Stat } from "../ui";
 
@@ -44,6 +45,8 @@ export function DevicesPage() {
         <h1 className="text-2xl font-semibold">{t("devices_title")}</h1>
         <p className="text-sm text-muted-foreground">{t("devices_intro")}</p>
       </header>
+
+      <DownloadCard />
 
       <Card className="space-y-3">
         <div className="flex items-center gap-2 text-sm font-medium">

@@ -2,6 +2,7 @@ import { requireUser } from "./auth.ts";
 import * as consoleApi from "./console.ts";
 import type { Env } from "./db.ts";
 import * as device from "./device.ts";
+import * as releases from "./releases.ts";
 import { ApiError, failure, json } from "./http.ts";
 import pkg from "../../package.json" with { type: "json" };
 
@@ -46,6 +47,11 @@ export default {
         return new Response(null, { status: 204, headers });
       }
       if (path === "/api/health") return withCors(request, env, json({ ok: true, service: "exe", version: pkg.version, now: Math.floor(Date.now() / 1000) }));
+
+      // --- client binaries: latest GitHub Release, proxied -------------------
+      if (path === "/api/releases/latest" && method === "GET") return withCors(request, env, await releases.latest(env));
+      const asset = path.match(/^\/download\/([A-Za-z0-9][A-Za-z0-9._-]{0,120})$/);
+      if (asset && method === "GET") return await releases.download(env, asset[1]!);
 
       // --- devices: self-signed, no bearer token -------------------------------
       let match = path.match(new RegExp(`^/v1/agents/${ADDRESS}$`));
