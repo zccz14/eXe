@@ -13,6 +13,11 @@ gh secret set CLOUDFLARE_ACCOUNT_ID   # b831a34938a75457b5029d31cea13c25
 
 Token 缺失时工作流会跳过部署并打 warning，不会把 CI 变红。
 
+控制台是 Pages 上的静态站点，中继在 `exe.ntnl.io`，两者不同源。构建期用
+`VITE_API_BASE=https://exe.ntnl.io` 指路，Worker 侧用 `CONSOLE_ORIGINS`
+（逗号分隔，默认 `https://exe-console.pages.dev`）放行 CORS 预检。
+改控制台域名时这两处一起改。
+
 ## 首次部署（手动，Cloudflare）
 
 ```sh
@@ -21,6 +26,8 @@ wrangler d1 create exe               # 记下 database_id，填进 wrangler.json
 pnpm build                           # 构建控制台到 console/dist
 wrangler d1 execute exe --remote --file worker/src/schema.sql
 wrangler deploy
+wrangler pages project create exe-console --production-branch main
+wrangler pages deploy console/dist --project-name=exe-console --branch=main
 ```
 
 把 `exe.ntnl.io` 指到 worker（Custom Domain 或 Route），并把
@@ -35,7 +42,18 @@ token audience 必须与它逐字一致。
   建议保持单一 `exe.ntnl.io`。控制台额外向 AuthMini 申请的 audience
   （默认 `exe.ntnl.io,linkit.ntnl.io`，供共享外壳的 Linkit 组件使用）
   由构建期 `VITE_AUTH_AUDIENCES` 控制，不影响 API 授权。
-- 草稿期：结构变更一律「删表重建」（`DROP TABLE` 后重跑 `schema.sql`），不保留迁移历史。
+- 草稿期：结构变更一律「删表重建」。本次改动换了设备/调用的主键（地址与 `call_id`），
+  线上要执行：
+
+  ```sh
+  wrangler d1 execute exe --remote --command \
+    "DROP TABLE IF EXISTS calls; DROP TABLE IF EXISTS devices; DROP TABLE IF EXISTS agents; \
+     DROP TABLE IF EXISTS accounts; DROP TABLE IF EXISTS account_challenges; \
+     DROP TABLE IF EXISTS request_nonces; DROP TABLE IF EXISTS pairings;"
+  wrangler d1 execute exe --remote --file worker/src/schema.sql
+  ```
+
+  旧数据不解密、不迁移：它属于旧线格式，密钥与报文都对不上。
 
 ## 日常发布
 
@@ -78,5 +96,5 @@ iOS：见 `agent/ios/README.md`。
 
 ## 观测
 
-`wrangler tail exe` 看实时日志。日志里不会出现结果正文、设备令牌或账号私钥；
-只出现设备 id、调用 id 与状态迁移。
+`wrangler tail exe` 看实时日志。日志里不会出现结果正文、私钥或请求签名；
+只出现设备地址、调用 id 与状态迁移。
