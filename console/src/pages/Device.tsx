@@ -14,6 +14,9 @@ const DEFAULT_TOOL = "shell";
 function statusTone(status: CallView["status"]): "muted" | "ok" | "warn" | "bad" {
   if (status === "succeeded") return "ok";
   if (status === "failed") return "bad";
+  // `lost` is not a failure we witnessed: the process that took the call went
+  // away, so nobody knows what happened. It is flagged, not hidden.
+  if (status === "lost") return "bad";
   if (status === "queued" || status === "received") return "warn";
   return "muted";
 }
@@ -154,6 +157,7 @@ export function DevicePage() {
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <Stat label={t("last_seen")} value={device?.last_seen_at ? new Date(device.last_seen_at * 1000).toLocaleString() : "—"} />
+          <Stat label={t("run_started")} value={device?.run_started_at ? new Date(device.run_started_at * 1000).toLocaleString() : "—"} />
           <Stat label={t("device_address")} value={entry.address} mono />
         </div>
       </Card>

@@ -44,6 +44,8 @@ const copy = {
     failed: "失败",
     cancelled: "已取消",
     expired_state: "已过期",
+    lost: "结果未知",
+    run_started: "本次进程",
     language: "语言",
     sealed_call: "（密封）",
   },
@@ -88,6 +90,8 @@ const copy = {
     failed: "failed",
     cancelled: "cancelled",
     expired_state: "expired",
+    lost: "unknown",
+    run_started: "running since",
     language: "Language",
     sealed_call: "(sealed)",
   },
@@ -102,6 +106,7 @@ export const statusCopy = {
   failed: "failed",
   cancelled: "cancelled",
   expired: "expired_state",
+  lost: "lost",
 } as const satisfies Record<string, CopyKey>;
 
 const LanguageContext = createContext<{ lang: Lang; setLang: (lang: Lang) => void }>({ lang: "zh", setLang: () => {} });

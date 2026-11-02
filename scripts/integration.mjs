@@ -17,6 +17,26 @@ import {
 const PORT = 8787;
 const base = `http://127.0.0.1:${PORT}`;
 
+/** One process's registration: who it trusts and which run is behind the address. */
+async function registerDevice(identity, trust = [], runId = "run-1") {
+  const address = addressOf(identity);
+  const path = `/v1/devices/${address}`;
+  const response = await fetch(`${base}${path}`, {
+    method: "PUT",
+    headers: { ...signedHeaders(identity, "PUT", path), "content-type": "application/json" },
+    body: JSON.stringify({
+      hostname: "integration-host",
+      platform: "linux-x86_64",
+      version: "0.3.0",
+      trust: trust.join(","),
+      run_id: runId,
+    }),
+  });
+  const text = await response.text();
+  assert.equal(response.status, 200, text);
+  return { address, ...JSON.parse(text) };
+}
+
 async function waitForWorker() {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     try {
@@ -107,7 +127,13 @@ async function run() {
 
   // --- the device self-registers: one signed request, single-use nonce -----
   const regPath = `/v1/devices/${deviceAddress}`;
-  const regBody = JSON.stringify({ hostname: "integration-host", platform: "linux-x86_64", version: "0.1.0" });
+  const regBody = JSON.stringify({
+    hostname: "integration-host",
+    platform: "linux-x86_64",
+    version: "0.3.0",
+    trust: browser.address,
+    run_id: "run-1",
+  });
   const regHeaders = signedHeaders(device, "PUT", regPath);
   const reg = await fetch(`${base}${regPath}`, {
     method: "PUT",
@@ -149,6 +175,8 @@ async function run() {
   const online = await browser.request(base, "GET", `/api/devices/${deviceAddress}`);
   assert.equal(online.online, true);
   assert.equal(online.hostname, "integration-host");
+  assert.equal(online.run_id, "run-1", "the relay can tell which process is behind the address");
+  assert.ok(online.run_started_at, "and when it started");
 
   // --- SSE with self-signed auth ------------------------------------------
   const streamPath = `/v1/devices/${deviceAddress}/stream`;
@@ -200,8 +228,7 @@ async function run() {
   assert.equal(pushed.call.received_at, null);
 
   // The same signed envelope sent twice queues once — replay is a no-op by key.
-  // The address below never registered anywhere: the relay does not gate on a book.
-  const replayDevice = addressOf(newIdentity());
+  const replayDevice = (await registerDevice(newIdentity(), [browser.address])).address;
   const replayCall = browser.signCall(replayDevice, "shell", { command: "printf replay" });
   const postCall = () =>
     fetch(`${base}/api/devices/${replayDevice}/calls`, {
@@ -209,10 +236,20 @@ async function run() {
       headers: { ...signedHeaders(browser.identity, "POST", `/api/devices/${replayDevice}/calls`), "content-type": "application/json" },
       body: JSON.stringify(replayCall),
     });
-  assert.equal((await postCall()).status, 200, "an address that never checked in can still be queued for");
+  assert.equal((await postCall()).status, 200, "a registered device takes calls from the addresses it trusts");
   assert.equal((await postCall()).status, 409, "a replayed envelope collides on the call_id");
   const replayList = await browser.request(base, "GET", `/api/calls?device=${replayDevice}`);
   assert.equal(replayList.calls.length, 1, "the replay wrote nothing");
+
+  // The relay now drops what the device would refuse anyway: an unrouted address
+  // never even reaches the device's socket.
+  const neverRegistered = addressOf(newIdentity());
+  const unrouted = await fetch(`${base}/api/devices/${neverRegistered}/calls`, {
+    method: "POST",
+    headers: { ...signedHeaders(browser.identity, "POST", `/api/devices/${neverRegistered}/calls`), "content-type": "application/json" },
+    body: JSON.stringify(browser.signCall(neverRegistered, "shell", { command: "printf void" })),
+  });
+  assert.equal(unrouted.status, 404, "no device has ever checked in at that address");
 
   // Editing the sealed body after signing is refused before it is queued.
   const forged = browser.signCall(deviceAddress, "shell", { command: "printf honest" });
@@ -231,8 +268,9 @@ async function run() {
   });
   assert.equal(unsignedCall.status, 400);
 
-  // Any console may queue for any address: the relay routes, it does not decide
-  // trust. What stops a stranger's call is the device's own trust list.
+  // A stranger is stopped before the device: the relay holds a copy of the
+  // device's trust list and drops what it knows will be refused, so a stranger's
+  // 96 KiB envelope never costs the device a signature check.
   const stranger = makeBrowser();
   const strangerCall = stranger.signCall(deviceAddress, "shell", { command: "printf stranger" });
   assert.ok(verifyCall(strangerCall), "the stranger's envelope is well formed");
@@ -241,8 +279,7 @@ async function run() {
     headers: { ...signedHeaders(stranger.identity, "POST", `/api/devices/${deviceAddress}/calls`), "content-type": "application/json" },
     body: JSON.stringify(strangerCall),
   });
-  assert.equal(strangerQueued.status, 200, "the relay only queues what the sender signed");
-  assert.notEqual(strangerCall.issuer, browser.address, "but a device that trusts only the browser will discard it");
+  assert.equal(strangerQueued.status, 403, "the device does not trust this address");
   assert.equal(
     verifyCall({ ...strangerCall, issuer: browser.address }),
     false,
@@ -301,7 +338,7 @@ async function run() {
   await assert.rejects(stranger.request(base, "GET", `/api/calls/${callId}`), /404/, "and cannot even fetch it");
   const strangerList = await stranger.request(base, "GET", `/api/calls?device=${deviceAddress}`);
   assert.equal(strangerList.calls.some((call) => call.call_id === callId), false, "a call belongs to the console that signed it");
-  assert.equal(strangerList.calls.length, 1, "the stranger sees only its own call");
+  assert.equal(strangerList.calls.length, 0, "the stranger's call never existed");
 
   const stored = await browser.request(base, "GET", `/api/calls?device=${deviceAddress}`);
   assert.equal(stored.calls.length, 1);
@@ -309,20 +346,52 @@ async function run() {
 
   // --- cancelling something that was never delivered -----------------------
   const idle = newIdentity();
-  const idleAddress = addressOf(idle);
+  const idleAddress = (await registerDevice(idle, [browser.address])).address;
   const pending = await browser.call(base, idleAddress, "shell", { command: "sleep 5" });
   const cancelled = await browser.request(base, "POST", `/api/calls/${pending.call.call_id}/cancel`);
   assert.equal(cancelled, null);
   const cancelledView = await browser.request(base, "GET", `/api/calls/${pending.call.call_id}`);
   assert.equal(cancelledView.call.status, "cancelled");
 
-  // --- forgetting a device is local, and was never a boundary --------------
-  // The address book lives in the browser now. The relay queues for any address
-  // that presents a valid envelope; what refuses a call is the device's trust list.
-  const ghost = await browser.call(base, idleAddress, "shell", { command: "true" });
-  assert.ok(ghost.call.call_id, "a forgotten device can still be queued for");
-  const ghostView = await browser.request(base, "GET", `/api/calls/${ghost.call.call_id}`);
-  assert.equal(ghostView.call.status, "queued", "nothing on the relay depends on a browser's book");
+  // --- a restart is an observable event, not a silent void ----------------
+  // A call handed to a process that then dies has an unknown outcome. It is
+  // marked lost and never re-delivered: a side effect that may already exist
+  // must not be repeated behind the caller's back.
+  const crashy = newIdentity();
+  const crashyAddress = (await registerDevice(crashy, [browser.address], "run-A")).address;
+  const envelope = browser.signCall(crashyAddress, "shell", { command: "printf half-done" });
+  const queued = await fetch(`${base}/api/devices/${crashyAddress}/calls`, {
+    method: "POST",
+    headers: { ...signedHeaders(browser.identity, "POST", `/api/devices/${crashyAddress}/calls`), "content-type": "application/json" },
+    body: JSON.stringify(envelope),
+  }).then((response) => response.json());
+  const receiptPath = `/v1/devices/${crashyAddress}/calls/${queued.call.call_id}/received`;
+  assert.equal((await fetch(`${base}${receiptPath}`, { method: "POST", headers: signedHeaders(crashy, "POST", receiptPath) })).status, 204);
+  assert.equal((await browser.request(base, "GET", `/api/calls/${queued.call.call_id}`)).call.status, "received");
+
+  const restarted = await registerDevice(crashy, [browser.address], "run-B");
+  assert.equal(restarted.abandoned, 1, "the new process reports what it inherited");
+  const orphaned = await browser.request(base, "GET", `/api/calls/${queued.call.call_id}`);
+  assert.equal(orphaned.call.status, "lost", "an interrupted call is not silently re-run");
+  assert.ok(orphaned.call.settled_at);
+  await assert.rejects(
+    browser.request(base, "POST", `/api/calls/${queued.call.call_id}/cancel`),
+    /409/,
+    "a lost call is already over",
+  );
+
+  // Evidence outranks the relay's guess: a result signed after the fact settles it.
+  const late = buildResult({ seed: crashy.seed, call: envelope, ok: true, plaintext: '{"ok":true}', issuedAt: now() });
+  const lateResultPath = `/v1/devices/${crashyAddress}/calls/${queued.call.call_id}/result`;
+  assert.equal(
+    (await fetch(`${base}${lateResultPath}`, {
+      method: "POST",
+      headers: { ...signedHeaders(crashy, "POST", lateResultPath), "content-type": "application/json" },
+      body: JSON.stringify(late),
+    })).status,
+    204,
+  );
+  assert.equal((await browser.request(base, "GET", `/api/calls/${queued.call.call_id}`)).call.status, "succeeded");
 
   controller.abort();
 }

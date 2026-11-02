@@ -21,8 +21,21 @@ export interface DeviceRow {
   hostname: string;
   platform: string;
   version: string;
+  /** Comma-separated addresses the device says it trusts. Empty means "nobody". */
+  trust: string;
+  /** The `exe run` process currently behind this address. A change means a restart. */
+  run_id: string;
+  run_started_at: number;
   first_seen_at: number;
   last_seen_at: number;
+}
+
+/** Splits a stored trust list. An empty string is a device that trusts nobody. */
+export function trustList(value: string): string[] {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 export interface CallRow {
@@ -54,6 +67,28 @@ export interface DeviceInfo {
   hostname: string;
   platform: string;
   version: string;
+  trust: string;
+  run_id: string;
+  run_started_at: number;
+}
+
+/**
+ * A new process is running behind this address. Every call the previous one
+ * acknowledged and never settled becomes `lost`: it was handed to a process that
+ * is gone, so its outcome is unknown. Re-delivering it would risk applying a
+ * side effect twice, and only the human behind the console knows whether that is
+ * safe — they can sign a fresh call if they want it run again.
+ *
+ * Runs on registration only, i.e. once per process start, and touches at most a
+ * handful of rows.
+ */
+export async function abandonOrphans(env: Env, address: string, runId: string): Promise<number> {
+  const result = await env.DB.prepare(
+    "UPDATE calls SET status='lost', settled_at=? WHERE device_address=? AND status='received' AND (device_run_id IS NULL OR device_run_id != ?)",
+  )
+    .bind(now(), address, runId)
+    .run();
+  return result.meta.changes ?? 0;
 }
 
 /** Records that an address is alive; the relay stores nothing else about it. */
@@ -64,10 +99,11 @@ export async function touchDevice(env: Env, address: string, info?: DeviceInfo):
     const platform = info.platform.slice(0, 40);
     const version = info.version.slice(0, 20);
     await env.DB.prepare(
-      "INSERT INTO devices(address,hostname,platform,version,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?) " +
-        "ON CONFLICT(address) DO UPDATE SET hostname=excluded.hostname, platform=excluded.platform, version=excluded.version, last_seen_at=excluded.last_seen_at",
+      "INSERT INTO devices(address,hostname,platform,version,trust,run_id,run_started_at,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?) " +
+        "ON CONFLICT(address) DO UPDATE SET hostname=excluded.hostname, platform=excluded.platform, version=excluded.version, " +
+        "trust=excluded.trust, run_id=excluded.run_id, run_started_at=excluded.run_started_at, last_seen_at=excluded.last_seen_at",
     )
-      .bind(address, hostname, platform, version, stamp, stamp)
+      .bind(address, hostname, platform, version, info.trust, info.run_id, info.run_started_at, stamp, stamp)
       .run();
     return;
   }

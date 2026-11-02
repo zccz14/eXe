@@ -61,6 +61,8 @@ export interface DeviceStatus {
   hostname: string | null;
   platform: string | null;
   version: string | null;
+  run_id: string | null;
+  run_started_at: number | null;
   online: boolean;
   last_seen_at: number | null;
 }
@@ -69,7 +71,7 @@ export interface CallView {
   call_id: string;
   device: string;
   issuer: string;
-  status: "queued" | "received" | "succeeded" | "failed" | "cancelled" | "expired";
+  status: "queued" | "received" | "succeeded" | "failed" | "cancelled" | "expired" | "lost";
   issued_at: number;
   expires_at: number;
   received_at: number | null;

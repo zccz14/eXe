@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/exe-core", "crates/exe-cli", "crates/exe-mobile"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
@@ -27,7 +27,7 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-m
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v7"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 [profile.release]
