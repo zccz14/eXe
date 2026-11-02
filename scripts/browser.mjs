@@ -3,9 +3,9 @@ import {
   b64u,
   newAccountKeys,
   openResult,
+  sealCall,
   signAccount,
   signApproval,
-  signCall,
   unb64u,
 } from "../shared/protocol.ts";
 
@@ -48,16 +48,24 @@ export function makeBrowser() {
       if (!response.ok) throw new Error(`approval failed: ${response.status} ${await response.text()}`);
       return response.json();
     },
-    signDeviceCall(deviceId, accountId, name, args, ttl = 300) {
+    signDeviceCall(deviceId, accountId, deviceKexPub, name, args, ttl = 300) {
       const issuedAt = now();
       const callId = crypto.randomUUID();
-      const nonce = b64u(crypto.getRandomValues(new Uint8Array(16)));
-      const serialized = JSON.stringify(args);
-      const sig = signCall(keys.sigSk, { callId, deviceId, accountId, name, args: serialized, nonce, issuedAt, expiresAt: issuedAt + ttl });
-      return { id: callId, name, args: serialized, nonce, issued_at: issuedAt, expires_at: issuedAt + ttl, sig };
+      const sealed = sealCall({
+        callId,
+        deviceId,
+        accountId,
+        name,
+        args: JSON.stringify(args),
+        issuedAt,
+        expiresAt: issuedAt + ttl,
+        deviceKexPub: unb64u(deviceKexPub),
+        accountSigSeed: keys.sigSk,
+      });
+      return { id: callId, ...sealed };
     },
-    async call(base, auth, deviceId, accountId, name, args) {
-      const body = this.signDeviceCall(deviceId, accountId, name, args);
+    async call(base, auth, deviceId, accountId, deviceKexPub, name, args) {
+      const body = this.signDeviceCall(deviceId, accountId, deviceKexPub, name, args);
       const response = await fetch(`${base}/api/devices/${deviceId}/calls`, {
         method: "POST",
         headers: { ...auth, "content-type": "application/json" },

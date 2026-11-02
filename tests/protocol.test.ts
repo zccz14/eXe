@@ -7,6 +7,7 @@ import {
   b64u,
   callTranscript,
   hex,
+  openCall,
   openResult,
   resultTranscript,
   sealResult,
@@ -22,27 +23,58 @@ import {
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
 
-const call = {
+const callFields = {
   callId: vectors.call.callId,
   deviceId: vectors.call.deviceId,
   accountId: vectors.call.accountId,
-  name: vectors.call.name,
-  args: vectors.call.args,
-  nonce: vectors.call.nonce,
+  eph: unb64u(vectors.call.eph),
+  nonce: unb64u(vectors.call.nonce),
+  ciphertext: unb64u(vectors.call.ct),
   issuedAt: vectors.call.issuedAt,
   expiresAt: vectors.call.expiresAt,
 };
 
 test("call transcript digest is stable and the account signature verifies", () => {
-  assert.equal(hex(sha256(callTranscript(call))), vectors.call.transcript_sha256);
-  assert.ok(verifyCall(vectors.keys.account_sig_pub, call, vectors.call.sig));
+  assert.equal(hex(sha256(callTranscript(callFields))), vectors.call.transcript_sha256);
+  assert.ok(verifyCall(vectors.keys.account_sig_pub, callFields, vectors.call.sig));
 });
 
 test("any change to a signed call is rejected", () => {
-  assert.equal(verifyCall(vectors.keys.account_sig_pub, { ...call, args: '{"text":"evil"}' }, vectors.call.sig), false);
-  assert.equal(verifyCall(vectors.keys.account_sig_pub, { ...call, deviceId: crypto.randomUUID() }, vectors.call.sig), false);
-  assert.equal(verifyCall(vectors.keys.account_sig_pub, { ...call, expiresAt: call.expiresAt + 1 }, vectors.call.sig), false);
-  assert.equal(verifyCall(vectors.keys.device_sig_pub, call, vectors.call.sig), false);
+  const flipped = new Uint8Array(callFields.ciphertext);
+  flipped[0] = flipped[0]! ^ 1;
+  assert.equal(verifyCall(vectors.keys.account_sig_pub, { ...callFields, ciphertext: flipped }, vectors.call.sig), false);
+  assert.equal(verifyCall(vectors.keys.account_sig_pub, { ...callFields, deviceId: crypto.randomUUID() }, vectors.call.sig), false);
+  assert.equal(verifyCall(vectors.keys.account_sig_pub, { ...callFields, expiresAt: callFields.expiresAt + 1 }, vectors.call.sig), false);
+  assert.equal(verifyCall(vectors.keys.device_sig_pub, callFields, vectors.call.sig), false);
+});
+
+test("only the device can open its command, and the cloud sees no tool name", () => {
+  const opened = openCall({
+    deviceKexSk: unhex(vectors.keys.device_kex_seed),
+    callId: callFields.callId,
+    deviceId: callFields.deviceId,
+    accountId: callFields.accountId,
+    eph: callFields.eph,
+    nonce: callFields.nonce,
+    ciphertext: callFields.ciphertext,
+  });
+  const expected = JSON.parse(vectors.call.plaintext) as { name: string; args: string };
+  assert.equal(opened.name, expected.name);
+  assert.equal(opened.args, expected.args);
+  assert.throws(() =>
+    openCall({
+      deviceKexSk: unhex(vectors.keys.account_kex_seed),
+      callId: callFields.callId,
+      deviceId: callFields.deviceId,
+      accountId: callFields.accountId,
+      eph: callFields.eph,
+      nonce: callFields.nonce,
+      ciphertext: callFields.ciphertext,
+    }),
+  );
+  const wire = `${vectors.call.eph}${vectors.call.nonce}${vectors.call.ct}`;
+  assert.equal(wire.includes(expected.name), false, "the wire envelope carries no tool name");
+  assert.equal(wire.includes("hello eXe"), false, "and no arguments either");
 });
 
 test("account registration proves possession without sending a private key", () => {

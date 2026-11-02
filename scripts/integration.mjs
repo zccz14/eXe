@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { startJwks } from "./jwks.mjs";
 import { makeBrowser } from "./browser.mjs";
-import { b64u, sealResult, shortAuthenticationString, signResult, verifyCall } from "../shared/protocol.ts";
+import { b64u, openCall, sealResult, shortAuthenticationString, signResult, unb64u, verifyCall } from "../shared/protocol.ts";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { x25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -33,6 +33,9 @@ async function waitForWorker() {
 
 async function main() {
   writeDevVars();
+  spawnSync("npx", ["wrangler", "d1", "execute", "exe", "--local", "--command",
+    "DROP TABLE IF EXISTS calls; DROP TABLE IF EXISTS devices; DROP TABLE IF EXISTS pairings; DROP TABLE IF EXISTS accounts; DROP TABLE IF EXISTS account_challenges;"],
+    { stdio: "ignore" });
   spawnSync("npx", ["wrangler", "d1", "execute", "exe", "--local", "--file", "worker/src/schema.sql"], { stdio: "inherit" });
   const dev = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--ip", "127.0.0.1"], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -180,7 +183,7 @@ async function run() {
     throw new Error(`timed out waiting for ${name}`);
   };
 
-  const created = await browser.call(base, auth, deviceId, userId, "echo", { text: "hello eXe" });
+  const created = await browser.call(base, auth, deviceId, userId, deviceKexPub, "echo", { text: "hello eXe" });
   const callId = created.call.id;
   const delivered = await nextEvent("call");
   assert.equal(delivered.id, callId);
@@ -191,9 +194,9 @@ async function run() {
         callId: delivered.id,
         deviceId: delivered.device_id,
         accountId: delivered.account_id,
-        name: delivered.name,
-        args: delivered.args,
-        nonce: delivered.nonce,
+        eph: unb64u(delivered.eph),
+        nonce: unb64u(delivered.nonce),
+        ciphertext: unb64u(delivered.ct),
         issuedAt: delivered.issued_at,
         expiresAt: delivered.expires_at,
       },
@@ -201,6 +204,19 @@ async function run() {
     ),
     "the device can verify the call against the pinned account key",
   );
+  const opened = openCall({
+    deviceKexSk: deviceKexSeed,
+    callId: delivered.id,
+    deviceId,
+    accountId: userId,
+    eph: unb64u(delivered.eph),
+    nonce: unb64u(delivered.nonce),
+    ciphertext: unb64u(delivered.ct),
+  });
+  assert.equal(opened.name, "echo");
+  assert.deepEqual(JSON.parse(opened.args), { text: "hello eXe" });
+  assert.equal(JSON.stringify(delivered).includes("echo"), false, "the wire carries no tool name");
+  assert.equal(JSON.stringify(delivered).includes("hello eXe"), false, "nor the arguments");
 
   // Unsigned and tampered calls are refused before they ever reach a device.
   const unsigned = await fetch(`${base}/api/devices/${deviceId}/calls`, {
@@ -209,8 +225,8 @@ async function run() {
     body: JSON.stringify({ name: "echo", args: "{}" }),
   });
   assert.equal(unsigned.status, 400);
-  const forgedCall = browser.signDeviceCall(deviceId, userId, "echo", { text: "honest" });
-  forgedCall.args = JSON.stringify({ text: "evil" });
+  const forgedCall = browser.signDeviceCall(deviceId, userId, deviceKexPub, "echo", { text: "honest" });
+  forgedCall.ct = b64u(new Uint8Array(48).fill(7));
   const tampered = await fetch(`${base}/api/devices/${deviceId}/calls`, {
     method: "POST",
     headers: { ...auth, "content-type": "application/json" },
@@ -262,7 +278,7 @@ async function run() {
   assert.equal(JSON.stringify(stored.calls).includes("SEALED-MARKER-42"), false);
 
   // --- a fresh boot marks the in-flight call lost ---
-  const second = await browser.call(base, auth, deviceId, userId, "echo", { text: "second" });
+  const second = await browser.call(base, auth, deviceId, userId, deviceKexPub, "echo", { text: "second" });
   const secondDelivered = await nextEvent("call");
   assert.equal(secondDelivered.id, second.call.id);
   controller.abort();

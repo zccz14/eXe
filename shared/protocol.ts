@@ -73,25 +73,108 @@ export interface CallFields {
   callId: string;
   deviceId: string;
   accountId: string;
-  name: string;
-  args: string;
-  nonce: string;
+  eph: Uint8Array;
+  nonce: Uint8Array;
+  ciphertext: Uint8Array;
   issuedAt: number;
   expiresAt: number;
 }
 
+/** The cloud only ever sees these fields; the tool name and arguments are sealed. */
 export function callTranscript(fields: CallFields): Uint8Array {
   return cat(
     utf8("eXe/v1/call\0"),
     lp(utf8(fields.callId)),
     lp(utf8(fields.deviceId)),
     lp(utf8(fields.accountId)),
-    lp(utf8(fields.name)),
-    lp(sha256(utf8(fields.args))),
+    lp(fields.eph),
+    lp(fields.nonce),
+    lp(sha256(fields.ciphertext)),
     u64be(fields.issuedAt),
     u64be(fields.expiresAt),
-    lp(utf8(fields.nonce)),
   );
+}
+
+function callSealKey(ikm: Uint8Array, callId: string, deviceId: string): Uint8Array {
+  const salt = sha256(cat(utf8("eXe/v1/call"), lp(utf8(callId)), lp(utf8(deviceId))));
+  return hkdf(sha256, ikm, salt, utf8("eXe/v1/seal-call"), 32);
+}
+function callAad(callId: string, deviceId: string, accountId: string): Uint8Array {
+  return cat(lp(utf8(callId)), lp(utf8(deviceId)), lp(utf8(accountId)));
+}
+
+export interface SealedCall {
+  v: 1;
+  eph: string;
+  nonce: string;
+  ct: string;
+  issued_at: number;
+  expires_at: number;
+  sig: string;
+}
+
+/** Seals a command to the device's key agreement key and signs the envelope. */
+export function sealCall(input: {
+  callId: string;
+  deviceId: string;
+  accountId: string;
+  name: string;
+  args: string;
+  issuedAt: number;
+  expiresAt: number;
+  deviceKexPub: Uint8Array;
+  accountSigSeed: Uint8Array;
+  ephemeralSecret?: Uint8Array;
+}): SealedCall {
+  const ephemeralSecret = input.ephemeralSecret ?? randomBytes(32);
+  const eph = x25519.getPublicKey(ephemeralSecret);
+  const key = callSealKey(x25519.getSharedSecret(ephemeralSecret, input.deviceKexPub), input.callId, input.deviceId);
+  const nonce = randomBytes(12);
+  const ct = chacha20poly1305(key, nonce, callAad(input.callId, input.deviceId, input.accountId)).encrypt(
+    utf8(JSON.stringify({ name: input.name, args: input.args })),
+  );
+  const fields: CallFields = {
+    callId: input.callId,
+    deviceId: input.deviceId,
+    accountId: input.accountId,
+    eph,
+    nonce,
+    ciphertext: ct,
+    issuedAt: input.issuedAt,
+    expiresAt: input.expiresAt,
+  };
+  return {
+    v: 1,
+    eph: b64u(eph),
+    nonce: b64u(nonce),
+    ct: b64u(ct),
+    issued_at: input.issuedAt,
+    expires_at: input.expiresAt,
+    sig: b64u(ed25519.sign(callTranscript(fields), input.accountSigSeed)),
+  };
+}
+
+/** Device side: opens the sealed command with its own key agreement secret. */
+export function openCall(input: {
+  deviceKexSk: Uint8Array;
+  callId: string;
+  deviceId: string;
+  accountId: string;
+  eph: Uint8Array;
+  nonce: Uint8Array;
+  ciphertext: Uint8Array;
+}): { name: string; args: string } {
+  const key = callSealKey(x25519.getSharedSecret(input.deviceKexSk, input.eph), input.callId, input.deviceId);
+  const plain = chacha20poly1305(key, input.nonce, callAad(input.callId, input.deviceId, input.accountId)).decrypt(input.ciphertext);
+  return JSON.parse(fromUtf8(plain)) as { name: string; args: string };
+}
+
+export function verifyCall(sigPubB64u: string, fields: CallFields, signature: string): boolean {
+  try {
+    return ed25519.verify(unb64u(signature), callTranscript(fields), unb64u(sigPubB64u));
+  } catch {
+    return false;
+  }
 }
 
 export interface ResultFields {
@@ -185,16 +268,6 @@ export function newAccountKeys(): AccountKeys {
   return { sigSk, sigPub: ed25519.getPublicKey(sigSk), kexSk, kexPub: x25519.getPublicKey(kexSk) };
 }
 
-export function signCall(sigSeed: Uint8Array, fields: CallFields): string {
-  return b64u(ed25519.sign(callTranscript(fields), sigSeed));
-}
-export function verifyCall(sigPubB64u: string, fields: CallFields, signature: string): boolean {
-  try {
-    return ed25519.verify(unb64u(signature), callTranscript(fields), unb64u(sigPubB64u));
-  } catch {
-    return false;
-  }
-}
 export function signAccount(sigSeed: Uint8Array, fields: AccountFields): string {
   return b64u(ed25519.sign(accountTranscript(fields), sigSeed));
 }

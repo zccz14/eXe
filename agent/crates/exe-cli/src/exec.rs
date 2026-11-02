@@ -1,5 +1,5 @@
 use exe_core::policy::Policy;
-use exe_core::protocol::{CallEnvelope, PolicyDecision};
+use exe_core::protocol::PolicyDecision;
 use serde_json::{json, Value};
 
 fn failure(code: &str, error: &str) -> String {
@@ -15,17 +15,17 @@ fn truncate(bytes: &[u8], limit: usize) -> String {
     String::from_utf8_lossy(slice).into_owned()
 }
 
-/// Runs one verified call under the local policy. The signature is never the decision.
-pub async fn execute(policy: &Policy, call: &CallEnvelope) -> String {
-    match policy.decide(&call.name) {
+/// Runs one verified, decrypted command under the local policy.
+pub async fn execute(policy: &Policy, name: &str, args: &str) -> String {
+    match policy.decide(name) {
         PolicyDecision::Deny(reason) => return failure("policy_denied", &reason),
         PolicyDecision::Allow => {}
     }
-    let args: Value = match call.args_json() {
-        Ok(value) if value.is_object() => value,
+    let args: Value = match serde_json::from_str(args) {
+        Ok(value @ Value::Object(_)) => value,
         _ => return failure("invalid_args", "arguments must be a JSON object"),
     };
-    match call.name.as_str() {
+    match name {
         "echo" => {
             let text = args.get("text").and_then(Value::as_str).unwrap_or_default();
             json!({ "ok": true, "output": { "tool": "echo", "text": text } }).to_string()

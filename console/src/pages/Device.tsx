@@ -5,7 +5,7 @@ import { ArrowLeftIcon, PlayIcon, ShieldAlertIcon, SquareIcon, Trash2Icon } from
 import { Link, useParams } from "react-router-dom";
 import { api, type CallDetail, type CallView, type DeviceView } from "../api";
 import { useAccount } from "../account";
-import { newCallId, newNonce, openSealed, signDeviceCall } from "../keystore";
+import { localCalls, newCallId, openSealed, sealDeviceCall } from "../keystore";
 import { statusCopy, useCopy } from "../i18n";
 import { Badge, Button, Card, Input, Stat } from "../ui";
 
@@ -50,12 +50,17 @@ export function DevicePage() {
   });
 
   const [plaintext, setPlaintext] = useState<unknown>(null);
+  const [local, setLocal] = useState<Record<string, { name: string; args: string }>>({});
   const detail = useQuery({
     queryKey: ["call", openCall],
     queryFn: () => api<CallDetail>(sdk as never, `/api/calls/${openCall}`),
     enabled: Boolean(openCall),
     refetchInterval: (query) => (query.state.data?.call.has_result ? false : 2000),
   });
+
+  useEffect(() => {
+    void localCalls().then(setLocal);
+  }, [calls.data]);
 
   useEffect(() => {
     const envelope = detail.data?.envelope;
@@ -84,25 +89,23 @@ export function DevicePage() {
         throw new Error("arguments must be valid JSON");
       }
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("arguments must be a JSON object");
-      const issuedAt = Math.floor(Date.now() / 1000);
-      const signed = await signDeviceCall({
+      const sealed = await sealDeviceCall({
         callId: newCallId(),
         deviceId: id,
         accountId: account.account_id,
+        deviceKexPub: device!.kex_pub,
         name: tool,
         args: JSON.stringify(parsed),
-        nonce: newNonce(),
-        issuedAt,
-        expiresAt: issuedAt + 300,
       });
       return api<{ call: CallView }>(sdk as never, `/api/devices/${id}/calls`, {
         method: "POST",
-        body: JSON.stringify(signed),
+        body: JSON.stringify(sealed),
       });
     },
     onSuccess: () => {
       setError(null);
       void queryClient.invalidateQueries({ queryKey: ["calls", id] });
+      void localCalls().then(setLocal);
     },
     onError: (value: Error) => setError(value.message),
   });
@@ -197,7 +200,7 @@ export function DevicePage() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <button className="flex items-center gap-2 text-left text-sm" onClick={() => setOpenCall(openCall === call.id ? null : call.id)}>
                   <span className="font-mono text-xs text-muted-foreground">{call.id.slice(0, 8)}</span>
-                  <span className="font-medium">{call.name}</span>
+                  <span className="font-medium">{local[call.id]?.name ?? t("sealed_call")}</span>
                   <Badge tone={statusTone(call.status)}>{t(statusCopy[call.status])}</Badge>
                 </button>
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -212,7 +215,7 @@ export function DevicePage() {
               </div>
               {openCall === call.id && (
                 <div className="space-y-2 rounded-lg bg-muted/50 p-3 text-xs">
-                  <div className="font-mono break-all">{call.args}</div>
+                  <div className="font-mono break-all">{local[call.id]?.args ?? "—"}</div>
                   {detail.isLoading && <div className="text-muted-foreground">…</div>}
                   {plaintext !== null && <pre className="overflow-x-auto font-mono text-xs">{JSON.stringify(plaintext, null, 2)}</pre>}
                   {call.failure_code && <div className="text-destructive">{call.failure_code}</div>}

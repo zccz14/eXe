@@ -40,9 +40,9 @@ export interface CallRow {
   id: string;
   device_id: string;
   owner_user_id: string;
-  name: string;
-  args: string;
+  eph: string;
   nonce: string;
+  ct: string;
   issued_at: number;
   expires_at: number;
   sig: string;

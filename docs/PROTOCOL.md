@@ -10,7 +10,7 @@
 | `acct.sig` | Ed25519 | **浏览器**（首次登录时） | 签每一次调用与配对批准；私钥不出浏览器 |
 | `acct.kex` | X25519 | **浏览器** | 结果封装的目标；私钥不出浏览器 |
 | `dev.sig` | Ed25519 | **设备** | 签每一次结果回传 |
-| `dev.kex` | X25519 | **设备** | 保留：朝向设备投递密文（v1 未启用） |
+| `dev.kex` | X25519 | **设备** | 承接到这台设备的指令密文 |
 | `device_token` | 32B 随机 | **设备** | Bearer；只代表"能连上来" |
 | `device_secret` | 32B 随机 | **设备** | 配对轮询凭证，配对后作废 |
 
@@ -20,8 +20,9 @@
 
 ```
 T_call = "eXe/v1/call\0"
-       || L(call_id) || L(device_id) || L(account_id) || L(name)
-       || L(hex(sha256(args))) || u64be(issued_at) || u64be(expires_at) || L(nonce)
+       || L(call_id) || L(device_id) || L(account_id)
+       || L(eph) || L(nonce) || L(sha256(ct))
+       || u64be(issued_at) || u64be(expires_at)
 sig    = Ed25519(acct.sig_sk, T_call)
 
 T_result = "eXe/v1/result\0"
@@ -34,7 +35,11 @@ T_approval = "eXe/v1/approval\0"
 sig        = Ed25519(acct.sig_sk, T_approval)
 ```
 
-`args` 是**字符串**（已经序列化好的 JSON），签名覆盖它的精确字节，避免 JSON 规范化歧义。
+指令本身是密文：`ct = AEAD(K, nonce, aad, {"name":..., "args": "..."}）`，
+其中 `K = HKDF-SHA256(X25519(eph_sk, dev.kex_pub), salt=sha256("eXe/v1/call"||call_id||device_id), info="eXe/v1/seal-call", 32)`，
+`aad = L(call_id)||L(device_id)||L(account_id)`。
+
+签名覆盖的是**密文**——云端既读不到内容，也改不动内容。
 
 ## 2.1 账号登记（浏览器 → 云端）
 
@@ -98,7 +103,7 @@ x-exe-version: 0.1.0
 
 ```
 event: hello    data: {"device_id":"...","now":1700000000}
-event: call     data: {"id","name","args","nonce","issued_at","expires_at","sig","account_id","device_id"}
+event: call     data: {"id","device_id","account_id","eph","nonce","ct","issued_at","expires_at","sig"}
 event: cancel   data: {"id":"<call_id>"}
 event: heartbeat data: {}
 ```
@@ -153,7 +158,7 @@ ct   = ChaCha20Poly1305(key, nonce, aad, plaintext = 结果 JSON 字符串)
 | GET | `/api/pairings/{code}` | 读配对详情 + SAS |
 | POST | `/api/pairings/{code}` | 批准 `{ "label": "...", "issued_at": n, "sig": "..." }`（浏览器签名） |
 | DELETE | `/api/pairings/{code}` | 拒绝 |
-| POST | `/api/devices/{id}/calls` | 提交**已签名**的调用 `{id,name,args,nonce,issued_at,expires_at,sig}` |
+| POST | `/api/devices/{id}/calls` | 提交**已签名**的信封 `{id,eph,nonce,ct,issued_at,expires_at,sig}`（云端读不到内容） |
 | GET | `/api/calls?device_id=&limit=` | 调用列表（不含明文） |
 | GET | `/api/calls/{id}` | 单次调用 + **信封**（浏览器自行解密） |
 | POST | `/api/calls/{id}/cancel` | 请求取消 |

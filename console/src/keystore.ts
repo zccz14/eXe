@@ -4,14 +4,13 @@
 import {
   b64u,
   newAccountKeys,
+  sealCall,
   openResult,
   signAccount,
   signApproval,
-  signCall,
   unb64u,
   type AccountFields,
   type ApprovalFields,
-  type CallFields,
   type SealedResult,
 } from "../../shared/protocol.ts";
 
@@ -123,28 +122,77 @@ export async function signPairingApproval(
   return { issued_at: full.issuedAt, sig: signApproval(keys.sigSeed, full) };
 }
 
-export async function signDeviceCall(
-  fields: Omit<CallFields, "accountId"> & { accountId: string },
-): Promise<{ id: string; name: string; args: string; nonce: string; issued_at: number; expires_at: number; sig: string }> {
+/** Seals the command to the device key and signs the envelope. */
+export async function sealDeviceCall(input: {
+  callId: string;
+  deviceId: string;
+  accountId: string;
+  deviceKexPub: string;
+  name: string;
+  args: string;
+  ttlSeconds?: number;
+}): Promise<{ id: string; eph: string; nonce: string; ct: string; issued_at: number; expires_at: number; sig: string }> {
   const keys = await localKeys();
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const sealed = sealCall({
+    callId: input.callId,
+    deviceId: input.deviceId,
+    accountId: input.accountId,
+    name: input.name,
+    args: input.args,
+    issuedAt,
+    expiresAt: issuedAt + (input.ttlSeconds ?? 300),
+    deviceKexPub: unb64u(input.deviceKexPub),
+    accountSigSeed: keys.sigSeed,
+  });
+  await rememberCall({ id: input.callId, device_id: input.deviceId, name: input.name, args: input.args, issued_at: issuedAt });
   return {
-    id: fields.callId,
-    name: fields.name,
-    args: fields.args,
-    nonce: fields.nonce,
-    issued_at: fields.issuedAt,
-    expires_at: fields.expiresAt,
-    sig: signCall(keys.sigSeed, {
-      callId: fields.callId,
-      deviceId: fields.deviceId,
-      accountId: fields.accountId,
-      name: fields.name,
-      args: fields.args,
-      nonce: fields.nonce,
-      issuedAt: fields.issuedAt,
-      expiresAt: fields.expiresAt,
-    }),
+    id: input.callId,
+    eph: sealed.eph,
+    nonce: sealed.nonce,
+    ct: sealed.ct,
+    issued_at: sealed.issued_at,
+    expires_at: sealed.expires_at,
+    sig: sealed.sig,
   };
+}
+
+/** The cloud cannot name a call, so the console keeps its own readable copy. */
+interface LocalCall {
+  id: string;
+  device_id: string;
+  name: string;
+  args: string;
+  issued_at: number;
+}
+
+async function rememberCall(call: LocalCall): Promise<void> {
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const request = db.transaction(STORE, "readwrite").objectStore(STORE).put(call, `call:${call.id}`);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function localCalls(): Promise<Record<string, LocalCall>> {
+  const db = await openDb();
+  const keys = await new Promise<IDBValidKey[]>((resolve, reject) => {
+    const request = db.transaction(STORE, "readonly").objectStore(STORE).getAllKeys();
+    request.onsuccess = () => resolve(request.result as IDBValidKey[]);
+    request.onerror = () => reject(request.error);
+  });
+  const out: Record<string, LocalCall> = {};
+  for (const key of keys) {
+    if (typeof key !== "string" || !key.startsWith("call:")) continue;
+    const value = await new Promise<LocalCall | undefined>((resolve, reject) => {
+      const request = db.transaction(STORE, "readonly").objectStore(STORE).get(key);
+      request.onsuccess = () => resolve(request.result as LocalCall | undefined);
+      request.onerror = () => reject(request.error);
+    });
+    if (value) out[value.id] = value;
+  }
+  return out;
 }
 
 export async function openSealed(callId: string, deviceId: string, envelope: SealedResult): Promise<unknown> {
