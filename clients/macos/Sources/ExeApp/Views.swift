@@ -37,6 +37,7 @@ struct Field: View {
 struct DeviceView: View {
     @EnvironmentObject private var supervisor: DeviceSupervisor
     @EnvironmentObject private var store: ConfigStore
+    @EnvironmentObject private var login: LoginItem
 
     var body: some View {
         ScrollView {
@@ -50,21 +51,36 @@ struct DeviceView: View {
                     HStack {
                         Button(supervisor.isRunning ? "重启" : "启动") { supervisor.restart() }
                         Button("停止") { supervisor.stop() }.disabled(!supervisor.isRunning)
-                        Button("停用系统服务") { store.stopSystemService() }
-                            .help("如果地址正被 launchd 服务占着，点这个把地址交回 App 托管")
+                        Button("移除系统服务") { store.removeSystemService() }
+                            .help("把地址从 launchd 手里永久收回（钥匙保留）；重新装回来跑一次 exe 即可")
                         Spacer()
                         if supervisor.needsHandover {
                             Button("从系统服务接手") {
-                                store.stopSystemService()
+                                store.removeSystemService()
                                 supervisor.clearHandover()
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) { supervisor.restart() }
                             }
-                            .help("地址现在由 launchd 服务占着，点这里交给 App 托管")
+                            .help("地址现在由 launchd 服务占着：移掉那个服务再把地址交给 App，重启后也不会再抢")
                         }
                         if store.device?.trust.isEmpty ?? true {
                             Text("还没有信任任何调用方：一切调用都会被拒绝")
                                 .font(.footnote).foregroundStyle(.orange)
                         }
+                    }
+
+                    Divider()
+
+                    HStack {
+                        Toggle("登录时自动启动", isOn: Binding(get: { login.isEnabled }, set: { login.set($0) }))
+                            .toggleStyle(.switch)
+                        Text(login.detail).font(.footnote).foregroundStyle(.secondary)
+                        Spacer()
+                        if login.status == .requiresApproval {
+                            Button("打开登录项设置") { login.openSettings() }
+                        }
+                    }
+                    if let note = login.message ?? store.message {
+                        Text(note).font(.footnote).foregroundStyle(.secondary)
                     }
                 }
 
