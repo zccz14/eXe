@@ -4,7 +4,7 @@
 // the console has no login: it signs with the key it holds.
 import { spawn, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeBrowser, signedHeaders } from "./browser.mjs";
@@ -89,11 +89,11 @@ async function main() {
     assert.match(listed.platform, /^(macos|linux|windows)-[a-z0-9_]+$/, "the relay learns the platform from the device itself");
     assert.equal(listed.online, true);
 
-    const settle = async (callId) => {
+    const settle = async (callId, who = browser) => {
       for (let attempt = 0; attempt < 60; attempt += 1) {
-        const detail = await browser.request(base, "GET", `/api/calls/${callId}`);
+        const detail = await who.request(base, "GET", `/api/calls/${callId}`);
         if (detail.call.status === "succeeded" || detail.call.status === "failed") {
-          return { ...detail, opened: detail.result ? browser.open(detail.call, detail.result) : null };
+          return { ...detail, opened: detail.result ? who.open(detail.call, detail.result) : null };
         }
         await wait(500);
       }
@@ -113,6 +113,37 @@ async function main() {
     const cwdResult = await settle(cwd.call.call_id);
     assert.equal(cwdResult.opened.ok, true);
     assert.ok(cwdResult.opened.output.stdout.trim().length > 0, "cwd is honoured");
+
+    // Adding a caller is a file edit, not a restart: this writes the config
+    // directly (no `exe trust`, no signal), and the running device must notice,
+    // re-register, and then actually run what the new caller signs.
+    const late = makeBrowser();
+    const configPath = join(configDir, "config.toml");
+    writeFileSync(
+      configPath,
+      readFileSync(configPath, "utf8").replace(
+        /trust\s*=\s*\[[^\]]*\]/,
+        `trust = ["${browser.address}", "${late.address}"]`,
+      ),
+    );
+    for (let attempt = 0; attempt < 40 && !clientLog.includes("trust reloaded from disk"); attempt += 1) await wait(250);
+    assert.ok(clientLog.includes("trust reloaded from disk"), `a hand edit is noticed\n${clientLog}`);
+    // The relay's copy of `trust` is refreshed when the device re-registers, so
+    // the first call from a brand-new address may be refused for a moment: retry
+    // briefly instead of pretending the window does not exist.
+    let lateCall = null;
+    for (let attempt = 0; attempt < 20 && lateCall === null; attempt += 1) {
+      try {
+        lateCall = await late.call(base, deviceAddress, "shell", { command: "printf late" });
+      } catch (error) {
+        if (!String(error).includes("403")) throw error;
+        await wait(250);
+      }
+    }
+    assert.ok(lateCall, "a caller added by editing the file can reach the relay");
+    const lateResult = await settle(lateCall.call.call_id, late);
+    assert.equal(lateResult.opened.output.stdout, "late", "a caller added by editing the file can run");
+    assert.equal(lateResult.call.status, "succeeded");
 
     // Anything past the inline budget comes back as a preview plus a pointer.
     const medium = await browser.call(base, deviceAddress, "shell", { command: "head -c 100000 /dev/zero | tr '\\0' 'm'" });
