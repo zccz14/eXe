@@ -115,7 +115,12 @@ async fn setup(trust: Vec<String>) -> Result<()> {
     }
     announce(&cfg, created);
 
-    if lock::holder().is_some() {
+    // The service itself holds the lock, so "someone holds it" is only a problem
+    // when it is not the service: that is a foreground `exe run`, and installing
+    // over it would fight for the address. When the service is the holder,
+    // reinstalling is exactly how an upgrade switches binaries — bootout,
+    // bootstrap, new process, same key.
+    if lock::holder().is_some() && service::state() != "running" {
         println!("service       a foreground `exe run` is holding this address");
         println!("              stop it first (Ctrl-C), then run `exe` again");
         return Ok(());
