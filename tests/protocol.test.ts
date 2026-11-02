@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import vectors from "./vectors.json" with { type: "json" };
 import {
+  accountPayload,
   accountTranscript,
   addressOf,
   agreementPublic,
@@ -25,6 +26,7 @@ import {
   requestTranscript,
   resultTranscript,
   sha256Hex,
+  signAccount,
   signCall,
   unb58,
   unhex,
@@ -214,4 +216,23 @@ test("a result built after the fact cannot be swapped between calls", () => {
   assert.equal(openResult({ seed: issuer.seed, call, result }), '{"ok":false,"code":"policy_denied"}');
   const other = { ...call, call_id: "22222222-2222-4222-8222-222222222222", expires_at: call.expires_at + 60 };
   assert.throws(() => openResult({ seed: issuer.seed, call: other, result }), "aAD binds the result to the call");
+});
+
+test("the account registration body matches what the relay parses", () => {
+  const fields = {
+    address: vectors.call.issuer,
+    userId: "031a393d-8a0a-4ca0-8cb1-313e0d71dfa9",
+    nonce: b64u(new Uint8Array(24).fill(7)),
+    issuedAt: 1_700_000_000,
+  };
+  const payload = accountPayload(fields, signAccount(issuer.seed, fields));
+  // The relay reads `issued_at` as a number and never looks for `userId`: the
+  // access token already carries it. A camelCase body fails with
+  // "issued_at is invalid", which is exactly how the console broke.
+  assert.deepEqual(Object.keys(payload).sort(), ["address", "issued_at", "nonce", "sig"]);
+  assert.equal(typeof payload.issued_at, "number");
+  assert.equal(payload.issued_at, fields.issuedAt);
+  assert.equal(payload.nonce, fields.nonce);
+  assert.equal(payload.address, fields.address);
+  assert.equal(verifyAccount(fields, payload.sig), true);
 });
