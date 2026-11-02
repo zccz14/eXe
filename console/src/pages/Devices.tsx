@@ -60,11 +60,20 @@ export function DevicesPage() {
             value={address}
             onChange={(event) => setAddress(event.target.value)}
             placeholder={t("device_address")}
-            className="font-mono text-xs"
+            className="font-mono text-xs sm:min-w-0 sm:flex-[3]"
             aria-label={t("device_address")}
           />
-          <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t("label_device")} />
-          <Button onClick={() => add.mutate()} disabled={add.isPending || address.trim().length < 32}>
+          <Input
+            value={label}
+            onChange={(event) => setLabel(event.target.value)}
+            placeholder={t("label_device")}
+            className="sm:min-w-0 sm:flex-[2]"
+          />
+          <Button
+            className="shrink-0 whitespace-nowrap"
+            onClick={() => add.mutate()}
+            disabled={add.isPending || address.trim().length < 32}
+          >
             <TerminalIcon className="size-4" />
             {t("add_device")}
           </Button>
@@ -72,7 +81,13 @@ export function DevicesPage() {
         {notice && <p className="text-sm text-destructive">{notice}</p>}
       </Card>
 
-      {list.length === 0 && <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">{t("no_devices")}</div>}
+      {devices.isError && (
+        <div className="rounded-xl border border-destructive/40 p-4 text-sm text-destructive">{t("devices_error")}</div>
+      )}
+
+      {list.length === 0 && !devices.isError && (
+        <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">{t("no_devices")}</div>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2">
         {list.map((device) => (
