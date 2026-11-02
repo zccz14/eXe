@@ -17,7 +17,7 @@ function corsHeaders(request: Request, env: Env): Headers | null {
   const headers = new Headers({
     "access-control-allow-origin": origin,
     vary: "origin",
-    "access-control-allow-headers": "content-type, x-exe-address, x-exe-timestamp, x-exe-nonce, x-exe-signature",
+    "access-control-allow-headers": "content-type, x-exe-address, x-exe-timestamp, x-exe-signature",
     "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
     "access-control-max-age": "86400",
   });
@@ -53,11 +53,11 @@ export default {
       if (asset && method === "GET") return await releases.download(env, asset[1]!);
 
       // --- devices: self-signed, no bearer token -------------------------------
-      let match = path.match(new RegExp(`^/v1/agents/${ADDRESS}$`));
-      if (match && method === "PUT") return await device.registerAgent(request, env, match[1]!);
-      match = path.match(new RegExp(`^/v1/agents/${ADDRESS}/stream$`));
+      let match = path.match(new RegExp(`^/v1/devices/${ADDRESS}$`));
+      if (match && method === "PUT") return await device.registerDevice(request, env, match[1]!);
+      match = path.match(new RegExp(`^/v1/devices/${ADDRESS}/stream$`));
       if (match && method === "GET") return await device.eventStream(request, env, match[1]!);
-      match = path.match(new RegExp(`^/v1/agents/${ADDRESS}/calls/${CALL_ID}/(received|result)$`));
+      match = path.match(new RegExp(`^/v1/devices/${ADDRESS}/calls/${CALL_ID}/(received|result)$`));
       if (match && method === "POST") {
         return match[3] === "received"
           ? await device.markReceived(request, env, match[1]!, match[2]!)
@@ -70,17 +70,15 @@ export default {
         const address = await authenticateConsole(request, env);
         const answer = async (): Promise<Response> => {
           if (path === "/api/me" && method === "GET") return await consoleApi.me(address);
-          if (path === "/api/devices" && method === "GET") return await consoleApi.listDevices(env, address);
-          if (path === "/api/devices" && method === "POST") return await consoleApi.addDevice(env, address, request);
           if (path === "/api/calls" && method === "GET") return await consoleApi.listCalls(env, address, url);
-          const match = path.match(new RegExp(`^/api/devices/${ADDRESS}$`));
-          if (match && method === "DELETE") return await consoleApi.removeDevice(env, address, match[1]!);
-          const deviceCalls = path.match(new RegExp(`^/api/devices/${ADDRESS}/calls$`));
-          if (deviceCalls && method === "POST") return await consoleApi.createCall(env, address, deviceCalls[1]!, request);
-          const readCall = path.match(new RegExp(`^/api/calls/${CALL_ID}$`));
-          if (readCall && method === "GET") return await consoleApi.readCall(env, address, readCall[1]!);
-          const cancel = path.match(new RegExp(`^/api/calls/${CALL_ID}/cancel$`));
-          if (cancel && method === "POST") return await consoleApi.cancelCall(env, address, cancel[1]!);
+          let match = path.match(new RegExp(`^/api/devices/${ADDRESS}$`));
+          if (match && method === "GET") return await consoleApi.deviceStatus(env, match[1]!);
+          match = path.match(new RegExp(`^/api/devices/${ADDRESS}/calls$`));
+          if (match && method === "POST") return await consoleApi.createCall(env, address, match[1]!, request);
+          match = path.match(new RegExp(`^/api/calls/${CALL_ID}$`));
+          if (match && method === "GET") return await consoleApi.readCall(env, address, match[1]!);
+          match = path.match(new RegExp(`^/api/calls/${CALL_ID}/cancel$`));
+          if (match && method === "POST") return await consoleApi.cancelCall(env, address, match[1]!);
           throw new ApiError(404, "unknown console endpoint");
         };
         return withCors(request, env, await answer());

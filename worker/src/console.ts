@@ -2,8 +2,12 @@
 // this module only ever verifies. The relay can route and queue, never sign,
 // never decrypt. There is no account behind the address: the address is the
 // identity, so "who owns this row" is answered by the signature that made it.
+//
+// The relay keeps no address book. Which devices a console talks to is a fact
+// about that browser (IndexedDB), not a row here — and it was never a boundary
+// anyway, because a device decides by its own `trust` list (docs/SOUL.md §9).
 import { isAddress, verifyCall, type CallEnvelope } from "../../shared/protocol.ts";
-import type { AgentRow, CallRow, DeviceRow, Env } from "./db.ts";
+import type { CallRow, Env } from "./db.ts";
 import { callById, deviceByAddress } from "./db.ts";
 import { ApiError, body, empty, json, now } from "./http.ts";
 
@@ -25,29 +29,15 @@ function requireAddress(value: unknown, field: string): string {
   return value;
 }
 
-export interface DeviceView {
+/** What the relay knows about one address: whether it has ever checked in. */
+export interface DeviceStatus {
   address: string;
-  label: string;
+  registered: boolean;
   hostname: string | null;
   platform: string | null;
   version: string | null;
   online: boolean;
   last_seen_at: number | null;
-  created_at: number;
-}
-
-function deviceView(device: DeviceRow, agent: AgentRow | null): DeviceView {
-  const lastSeen = agent?.last_seen_at ?? null;
-  return {
-    address: device.address,
-    label: device.label,
-    hostname: agent?.hostname ?? null,
-    platform: agent?.platform ?? null,
-    version: agent?.version ?? null,
-    online: lastSeen !== null && lastSeen > now() - OFFLINE_AFTER_SECONDS,
-    last_seen_at: lastSeen,
-    created_at: device.created_at,
-  };
 }
 
 export interface CallView {
@@ -57,7 +47,6 @@ export interface CallView {
   status: string;
   issued_at: number;
   expires_at: number;
-  delivered_at: number | null;
   received_at: number | null;
   settled_at: number | null;
   has_result: boolean;
@@ -71,7 +60,6 @@ function callView(row: CallRow): CallView {
     status: row.status,
     issued_at: row.issued_at,
     expires_at: row.expires_at,
-    delivered_at: row.delivered_at,
     received_at: row.received_at,
     settled_at: row.settled_at,
     has_result: row.result !== null,
@@ -83,63 +71,30 @@ export async function me(address: string): Promise<Response> {
   return json({ address, custody: "browser" });
 }
 
-export async function listDevices(env: Env, owner: string): Promise<Response> {
-  const rows = await env.DB.prepare(
-    `SELECT d.*, a.hostname AS agent_hostname, a.platform AS agent_platform, a.version AS agent_version, a.last_seen_at AS agent_last_seen
-     FROM devices d LEFT JOIN agents a ON a.address = d.address
-     WHERE d.owner_address=? ORDER BY d.created_at DESC`,
-  )
-    .bind(owner)
-    .all<DeviceRow & { agent_hostname: string | null; agent_platform: string | null; agent_version: string | null; agent_last_seen: number | null }>();
-  return json({
-    devices: rows.results.map((row) => {
-      const agent: AgentRow | null =
-        row.agent_last_seen === null
-          ? null
-          : {
-              address: row.address,
-              hostname: row.agent_hostname ?? "",
-              platform: row.agent_platform ?? "",
-              version: row.agent_version ?? "",
-              first_seen_at: row.agent_last_seen,
-              last_seen_at: row.agent_last_seen,
-            };
-      return deviceView(row, agent);
-    }),
-  });
-}
-
-/** Adding a device is typing its address: no code, no approval, no pairing. */
-export async function addDevice(env: Env, owner: string, request: Request): Promise<Response> {
-  const input = await body<Record<string, unknown>>(request);
-  const address = requireAddress(input.address, "address");
-  const label = typeof input.label === "string" && input.label.trim() ? input.label.trim().slice(0, 80) : address.slice(0, 12);
-  // Every console keeps its own address book. Whether the device trusts this
-  // address is decided on the device, not here.
-  await env.DB.prepare(
-    "INSERT INTO devices(owner_address,address,label,created_at) VALUES(?,?,?,?) " +
-      "ON CONFLICT(owner_address,address) DO UPDATE SET label=excluded.label",
-  )
-    .bind(owner, address, label, now())
-    .run();
-  const device = await deviceByAddress(env, owner, address);
-  const agent = await env.DB.prepare("SELECT * FROM agents WHERE address=?").bind(address).first<AgentRow>();
-  return json({ device: deviceView(device!, agent ?? null) });
-}
-
-export async function removeDevice(env: Env, owner: string, address: string): Promise<Response> {
+/**
+ * Online state by address. Any console may ask about any address: what a device
+ * will actually accept is decided on the device, not by who is asking here.
+ */
+export async function deviceStatus(env: Env, address: string): Promise<Response> {
   if (!isAddress(address)) throw new ApiError(404, "device not found");
-  const result = await env.DB.prepare("DELETE FROM devices WHERE owner_address=? AND address=?").bind(owner, address).run();
-  if (result.meta.changes === 0) throw new ApiError(404, "device not found");
-  await env.DB.prepare("UPDATE calls SET status='cancelled', settled_at=? WHERE device_address=? AND issuer=? AND status IN ('queued','delivered','received')")
-    .bind(now(), address, owner)
-    .run();
-  return empty();
+  const row = await deviceByAddress(env, address);
+  const lastSeen = row?.last_seen_at ?? null;
+  const status: DeviceStatus = {
+    address,
+    registered: row !== null,
+    hostname: row?.hostname ?? null,
+    platform: row?.platform ?? null,
+    version: row?.version ?? null,
+    online: lastSeen !== null && lastSeen > now() - OFFLINE_AFTER_SECONDS,
+    last_seen_at: lastSeen,
+  };
+  return json(status);
 }
 
 /**
  * Accepts an opaque, signed command. The relay cannot read the tool or its
  * arguments: it verifies the issuer signature over the ciphertext and queues it.
+ * Whether the device will run it is the device's business alone.
  */
 export async function createCall(env: Env, owner: string, address: string, request: Request): Promise<Response> {
   const input = await body<Record<string, unknown>>(request);
@@ -160,8 +115,8 @@ export async function createCall(env: Env, owner: string, address: string, reque
   const row: CallEnvelope = { call_id: callId, issuer, device, issued_at: issuedAt, expires_at: expiresAt, sealed, sig };
   if (!verifyCall(row)) throw new ApiError(403, "call signature does not verify against the issuing address");
 
-  const deviceRow = await deviceByAddress(env, owner, address);
-  if (!deviceRow) throw new ApiError(404, "device not found");
+  // The primary key is the replay defence: the same signed envelope sent twice
+  // queues once. There is no address-book gate — it never stopped anyone.
   if (await callById(env, callId)) throw new ApiError(409, "call_id already used");
 
   await env.DB.prepare(
@@ -195,7 +150,7 @@ export async function readCall(env: Env, owner: string, callId: string): Promise
 export async function cancelCall(env: Env, owner: string, callId: string): Promise<Response> {
   const row = await callById(env, callId);
   if (!row || row.issuer !== owner) throw new ApiError(404, "call not found");
-  if (!["queued", "delivered", "received"].includes(row.status)) throw new ApiError(409, "call is already settled");
+  if (!["queued", "received"].includes(row.status)) throw new ApiError(409, "call is already settled");
   await env.DB.prepare(
     "UPDATE calls SET cancel_requested_at=?, status=CASE WHEN status='queued' THEN 'cancelled' ELSE status END, settled_at=CASE WHEN status='queued' THEN ? ELSE settled_at END WHERE call_id=?",
   )
