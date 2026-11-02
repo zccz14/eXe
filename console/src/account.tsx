@@ -1,21 +1,22 @@
-// Registers this browser's public keys once, and tells the UI when it cannot
-// sign (a browser that never held the key can read nothing meaningful).
+// Registers this browser's address once, and tells the UI when it cannot sign
+// (a browser that never held the key can read nothing meaningful).
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuthMini } from "auth-mini-react-components";
 import { api, type Me } from "./api";
-import { localKeys, signRegistration } from "./keystore";
+import { localAddress, localIdentity, signRegistration } from "./keystore";
 
 type State = "loading" | "ready" | "mismatch" | "error";
 
 interface AccountContextValue {
   state: State;
   account: Me | null;
+  address: string | null;
   error: string | null;
   retry: () => void;
 }
 
-const AccountContext = createContext<AccountContextValue>({ state: "loading", account: null, error: null, retry: () => {} });
+const AccountContext = createContext<AccountContextValue>({ state: "loading", account: null, address: null, error: null, retry: () => {} });
 
 export function AccountProvider({ children }: { children: ReactNode }) {
   const { sdk } = useAuthMini();
@@ -29,7 +30,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
     async function ensure() {
       if (!me.data || !sdk) return;
       try {
-        const keys = await localKeys();
+        await localIdentity();
         if (me.data.registered) return;
         const challenge = await api<{ nonce: string }>(sdk as never, "/api/account/challenge");
         const signed = await signRegistration(me.data.account_id, challenge.nonce, Math.floor(Date.now() / 1000));
@@ -38,7 +39,6 @@ export function AccountProvider({ children }: { children: ReactNode }) {
           setError(null);
           await queryClient.invalidateQueries({ queryKey: ["me"] });
         }
-        void keys;
       } catch (value) {
         if (!cancelled) setError(value instanceof Error ? value.message : "registration failed");
       }
@@ -50,11 +50,11 @@ export function AccountProvider({ children }: { children: ReactNode }) {
   }, [me.data, sdk, queryClient, attempt]);
 
   const value = useMemo<AccountContextValue>(() => {
-    const keys = me.data;
-    if (error) return { state: "error", account: keys ?? null, error, retry: () => setAttempt((n) => n + 1) };
-    if (!keys) return { state: "loading", account: null, error: null, retry: () => {} };
-    if (!keys.registered) return { state: "loading", account: keys, error: null, retry: () => {} };
-    return { state: "mismatch", account: keys, error: null, retry: () => {} };
+    const account = me.data ?? null;
+    const retry = () => setAttempt((n) => n + 1);
+    if (error) return { state: "error", account, address: null, error, retry };
+    if (!account) return { state: "loading", account: null, address: null, error: null, retry };
+    return { state: account.registered ? "ready" : "loading", account, address: account.address, error: null, retry };
   }, [me.data, error]);
 
   return <AccountContext.Provider value={value}>{children}</AccountContext.Provider>;
@@ -64,9 +64,8 @@ export function useAccount() {
   return useContext(AccountContext);
 }
 
-/** True when this browser holds the key the server has on file. */
+/** True when this browser holds the key the relay has on file. */
 export async function holdsAccountKey(account: Me | null): Promise<boolean> {
-  if (!account?.sig_pub) return false;
-  const keys = await localKeys();
-  return keys.sigPub === account.sig_pub;
+  if (!account?.address) return false;
+  return (await localAddress()) === account.address;
 }

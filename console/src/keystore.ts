@@ -1,40 +1,32 @@
-// Browser-held account keys. The seed never leaves this origin: it is wrapped by
-// a non-extractable AES-GCM key in IndexedDB, and the worker only ever sees the
-// public half. See docs/THREAT-MODEL.md.
+// The browser is the only place the account key exists. It signs calls and opens
+// results; the relay only ever sees the address and sealed envelopes.
 import {
-  b64u,
-  newAccountKeys,
-  sealCall,
+  addressOf,
+  buildCall,
+  decodeSecret,
+  encodeSecret,
+  newIdentity,
   openResult,
   signAccount,
-  signApproval,
-  unb64u,
   type AccountFields,
-  type ApprovalFields,
-  type SealedResult,
+  type CallEnvelope,
+  type Identity,
+  type ResultEnvelope,
 } from "../../shared/protocol.ts";
 
 const DB_NAME = "exe-keys";
 const STORE = "account";
 const RECORD = "self";
 
-export interface LocalKeys {
-  sigSeed: Uint8Array;
-  kexSecret: Uint8Array;
-  sigPub: string;
-  kexPub: string;
-}
-
 interface StoredRecord {
   wrapping: CryptoKey;
   iv: string;
   ciphertext: string;
-  sig_pub: string;
-  kex_pub: string;
+  address: string;
   created_at: number;
 }
 
-let cached: Promise<LocalKeys> | null = null;
+let cached: Promise<Identity> | null = null;
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -45,56 +37,73 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-async function load(): Promise<LocalKeys> {
-  const db = await openDb();
-  const record = await new Promise<StoredRecord | undefined>((resolve, reject) => {
-    const request = db.transaction(STORE, "readonly").objectStore(STORE).get(RECORD);
-    request.onsuccess = () => resolve(request.result as StoredRecord | undefined);
+function read(db: IDBDatabase, key: string): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(STORE, "readonly").objectStore(STORE).get(key);
+    request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
-  if (record) {
-    const plain = new Uint8Array(
-      await crypto.subtle.decrypt(
-        { name: "AES-GCM", iv: unb64u(record.iv) as BufferSource },
-        record.wrapping,
-        unb64u(record.ciphertext) as BufferSource,
-      ),
-    );
-    return {
-      sigSeed: plain.slice(0, 32),
-      kexSecret: plain.slice(32, 64),
-      sigPub: record.sig_pub,
-      kexPub: record.kex_pub,
-    };
-  }
-  const keys = newAccountKeys();
-  const wrapping = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const secret = new Uint8Array(64);
-  secret.set(keys.sigSk, 0);
-  secret.set(keys.kexSk, 32);
-  const ciphertext = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv as BufferSource }, wrapping, secret as BufferSource),
-  );
-  const stored: StoredRecord = {
-    wrapping,
-    iv: b64u(iv),
-    ciphertext: b64u(ciphertext),
-    sig_pub: b64u(keys.sigPub),
-    kex_pub: b64u(keys.kexPub),
-    created_at: Math.floor(Date.now() / 1000),
-  };
-  await new Promise<void>((resolve, reject) => {
-    const request = db.transaction(STORE, "readwrite").objectStore(STORE).put(stored, RECORD);
+}
+
+function write(db: IDBDatabase, key: string, value: unknown): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(STORE, "readwrite").objectStore(STORE).put(value, key);
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
   });
-  return { sigSeed: keys.sigSk, kexSecret: keys.kexSk, sigPub: stored.sig_pub, kexPub: stored.kex_pub };
 }
 
-export function localKeys(): Promise<LocalKeys> {
+async function freshIdentity(db: IDBDatabase): Promise<Identity> {
+  const identity = newIdentity();
+  const wrapping = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv as BufferSource }, wrapping, new TextEncoder().encode(encodeSecret(identity)) as BufferSource),
+  );
+  const record: StoredRecord = {
+    wrapping,
+    iv: btoa(String.fromCharCode(...iv)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ""),
+    ciphertext: btoa(String.fromCharCode(...ciphertext)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ""),
+    address: addressOf(identity),
+    created_at: Math.floor(Date.now() / 1000),
+  };
+  await write(db, RECORD, record);
+  return identity;
+}
+
+function unb64uText(value: string): Uint8Array {
+  const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+  const binary = atob(padded);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+async function load(): Promise<Identity> {
+  const db = await openDb();
+  const record = (await read(db, RECORD)) as StoredRecord | undefined;
+  if (record) {
+    try {
+      const plain = new Uint8Array(
+        await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64uText(record.iv) as BufferSource }, record.wrapping, unb64uText(record.ciphertext) as BufferSource),
+      );
+      return decodeSecret(new TextDecoder().decode(plain));
+    } catch {
+      // A key from an older layout cannot be read; a draft protocol replaces it.
+      return await freshIdentity(db);
+    }
+  }
+  return await freshIdentity(db);
+}
+
+export function localIdentity(): Promise<Identity> {
   cached ??= load();
   return cached;
+}
+
+export async function localAddress(): Promise<string> {
+  return addressOf(await localIdentity());
 }
 
 /** Discards this browser's key. Results sealed to it become unreadable here. */
@@ -109,58 +118,39 @@ export async function forgetLocalKeys(): Promise<void> {
 }
 
 export async function signRegistration(userId: string, nonce: string, issuedAt: number): Promise<AccountFields & { sig: string }> {
-  const keys = await localKeys();
-  const fields: AccountFields = { userId, nonce, sigPub: keys.sigPub, kexPub: keys.kexPub, issuedAt };
-  return { ...fields, sig: signAccount(keys.sigSeed, fields) };
+  const identity = await localIdentity();
+  const fields: AccountFields = { address: addressOf(identity), userId, nonce, issuedAt };
+  return { ...fields, sig: signAccount(identity.seed, fields) };
 }
 
-export async function signPairingApproval(
-  fields: Omit<ApprovalFields, "accountSigPub" | "accountKexPub">,
-): Promise<{ issued_at: number; sig: string }> {
-  const keys = await localKeys();
-  const full: ApprovalFields = { ...fields, accountSigPub: keys.sigPub, accountKexPub: keys.kexPub };
-  return { issued_at: full.issuedAt, sig: signApproval(keys.sigSeed, full) };
-}
-
-/** Seals the command to the device key and signs the envelope. */
+/** Seals the command to the device address and signs the envelope. */
 export async function sealDeviceCall(input: {
   callId: string;
-  deviceId: string;
-  accountId: string;
-  deviceKexPub: string;
+  device: string;
   name: string;
   args: string;
   ttlSeconds?: number;
-}): Promise<{ id: string; eph: string; nonce: string; ct: string; issued_at: number; expires_at: number; sig: string }> {
-  const keys = await localKeys();
+}): Promise<CallEnvelope> {
+  const identity = await localIdentity();
   const issuedAt = Math.floor(Date.now() / 1000);
-  const sealed = sealCall({
+  const call = buildCall({
+    seed: identity.seed,
+    issuer: addressOf(identity),
+    device: input.device,
     callId: input.callId,
-    deviceId: input.deviceId,
-    accountId: input.accountId,
     name: input.name,
     args: input.args,
     issuedAt,
     expiresAt: issuedAt + (input.ttlSeconds ?? 300),
-    deviceKexPub: unb64u(input.deviceKexPub),
-    accountSigSeed: keys.sigSeed,
   });
-  await rememberCall({ id: input.callId, device_id: input.deviceId, name: input.name, args: input.args, issued_at: issuedAt });
-  return {
-    id: input.callId,
-    eph: sealed.eph,
-    nonce: sealed.nonce,
-    ct: sealed.ct,
-    issued_at: sealed.issued_at,
-    expires_at: sealed.expires_at,
-    sig: sealed.sig,
-  };
+  await rememberCall({ call_id: input.callId, device: input.device, name: input.name, args: input.args, issued_at: issuedAt });
+  return call;
 }
 
-/** The cloud cannot name a call, so the console keeps its own readable copy. */
-interface LocalCall {
-  id: string;
-  device_id: string;
+/** The relay cannot name a call, so the console keeps its own readable copy. */
+export interface LocalCall {
+  call_id: string;
+  device: string;
   name: string;
   args: string;
   issued_at: number;
@@ -168,11 +158,7 @@ interface LocalCall {
 
 async function rememberCall(call: LocalCall): Promise<void> {
   const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
-    const request = db.transaction(STORE, "readwrite").objectStore(STORE).put(call, `call:${call.id}`);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
+  await write(db, `call:${call.call_id}`, call);
 }
 
 export async function localCalls(): Promise<Record<string, LocalCall>> {
@@ -185,24 +171,20 @@ export async function localCalls(): Promise<Record<string, LocalCall>> {
   const out: Record<string, LocalCall> = {};
   for (const key of keys) {
     if (typeof key !== "string" || !key.startsWith("call:")) continue;
-    const value = await new Promise<LocalCall | undefined>((resolve, reject) => {
-      const request = db.transaction(STORE, "readonly").objectStore(STORE).get(key);
-      request.onsuccess = () => resolve(request.result as LocalCall | undefined);
-      request.onerror = () => reject(request.error);
-    });
-    if (value) out[value.id] = value;
+    const value = (await read(db, key)) as LocalCall | undefined;
+    if (value) out[value.call_id] = value;
   }
   return out;
 }
 
-export async function openSealed(callId: string, deviceId: string, envelope: SealedResult): Promise<unknown> {
-  const keys = await localKeys();
-  return JSON.parse(openResult({ accountKexSk: keys.kexSecret, callId, deviceId, envelope }));
+export async function openSealed(detail: {
+  call: { call_id: string; issuer: string; device: string; expires_at: number };
+  result: ResultEnvelope;
+}): Promise<unknown> {
+  const identity = await localIdentity();
+  return JSON.parse(openResult({ seed: identity.seed, call: detail.call, result: detail.result }));
 }
 
 export function newCallId(): string {
   return crypto.randomUUID();
-}
-export function newNonce(): string {
-  return b64u(crypto.getRandomValues(new Uint8Array(16)));
 }
