@@ -7,7 +7,9 @@
     "directory": "console/dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/v1/*", "/download/*"]
+    // `/__scheduled` is dev-only: it lets `wrangler dev --test-scheduled` fire the
+    // retention cron locally. In production the worker falls through to the SPA.
+    "run_worker_first": ["/api/*", "/v1/*", "/download/*", "/__scheduled"]
   },
   "d1_databases": [
     {
@@ -21,5 +23,6 @@
     "GITHUB_REPO": "zccz14/eXe"
   },
   "routes": [{ "pattern": "exe.ntnl.io", "custom_domain": true }],
+  "triggers": { "crons": ["41 * * * *"] },
   "observability": { "enabled": true }
 }

@@ -17,6 +17,10 @@ import {
 const PORT = 8787;
 const base = `http://127.0.0.1:${PORT}`;
 
+/** Seeding rows the HTTP API cannot create (a call old enough for retention). */
+const d1 = (command) =>
+  spawnSync("npx", ["wrangler", "d1", "execute", "exe", "--local", "--command", command], { stdio: "ignore" });
+
 /** One process's registration: who it trusts and which run is behind the address. */
 async function registerDevice(identity, trust = [], runId = "run-1") {
   const address = addressOf(identity);
@@ -53,7 +57,7 @@ async function main() {
     "DROP TABLE IF EXISTS calls; DROP TABLE IF EXISTS devices; DROP TABLE IF EXISTS agents; DROP TABLE IF EXISTS request_nonces;"],
     { stdio: "ignore" });
   spawnSync("npx", ["wrangler", "d1", "execute", "exe", "--local", "--file", "worker/src/schema.sql"], { stdio: "inherit" });
-  const dev = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--ip", "127.0.0.1"], {
+  const dev = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--ip", "127.0.0.1", "--test-scheduled"], {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" },
     detached: true,
@@ -390,6 +394,61 @@ async function run() {
     204,
   );
   assert.equal((await browser.request(base, "GET", `/api/calls/${queued.call.call_id}`)).call.status, "succeeded");
+
+  // --- how big a result may be, and how long it survives -------------------
+  // `sealed` is base64url, and the sealed body is 1.33x its plaintext, so a
+  // result is bounded by the 2 MB D1 row it lands in — not by a wire constant
+  // someone picked.
+  const bulk = newIdentity();
+  const bulkAddress = (await registerDevice(bulk, [browser.address], "run-bulk")).address;
+  const issue = async (envelope) => {
+    const response = await fetch(`${base}/api/devices/${bulkAddress}/calls`, {
+      method: "POST",
+      headers: { ...signedHeaders(browser.identity, "POST", `/api/devices/${bulkAddress}/calls`), "content-type": "application/json" },
+      body: JSON.stringify(envelope),
+    });
+    return { status: response.status, body: response.ok ? await response.json() : null };
+  };
+  const settleBulk = async (envelope, plaintext) => {
+    const path = `/v1/devices/${bulkAddress}/calls/${envelope.call_id}/result`;
+    const result = buildResult({ seed: bulk.seed, call: envelope, ok: true, plaintext, issuedAt: now() });
+    const response = await fetch(`${base}${path}`, {
+      method: "POST",
+      headers: { ...signedHeaders(bulk, "POST", path), "content-type": "application/json" },
+      body: JSON.stringify(result),
+    });
+    return response.status;
+  };
+
+  // 1.35 MB is inside the budget, and it comes back byte for byte.
+  const big = browser.signCall(bulkAddress, "shell", { command: "printf big" });
+  assert.equal((await issue(big)).status, 200);
+  const bigText = "y".repeat(1_350_000);
+  assert.equal(await settleBulk(big, JSON.stringify({ ok: true, output: { tool: "shell", stdout: bigText } })), 204);
+  const bigDetail = await browser.request(base, "GET", `/api/calls/${big.call_id}`);
+  assert.equal(browser.open(bigDetail.call, bigDetail.result).output.stdout.length, 1_350_000, "a megabyte-scale result survives its row");
+
+  // Beyond that the row would not fit; the relay says so instead of failing on insert.
+  const tooBig = browser.signCall(bulkAddress, "shell", { command: "printf huge" });
+  assert.equal((await issue(tooBig)).status, 200);
+  assert.equal(
+    await settleBulk(tooBig, JSON.stringify({ ok: true, output: { tool: "shell", stdout: "z".repeat(1_950_000) } })),
+    413,
+    "a result that would not fit in one row is refused",
+  );
+
+  // A command is a line of shell: its envelope is bounded by one body limit.
+  const fatCommand = browser.signCall(bulkAddress, "shell", { command: "x".repeat(70_000) });
+  assert.equal((await issue(fatCommand)).status, 413, "a command envelope over 64 KiB is refused");
+
+  // Retention: settled and old is deleted, settled and fresh is not.
+  const staleId = crypto.randomUUID();
+  const staleAt = now() - 8 * 24 * 60 * 60;
+  d1(`INSERT INTO calls(call_id,device_address,issuer,sealed,sig,issued_at,expires_at,status,settled_at,created_at) VALUES('${staleId}','${bulkAddress}','${browser.address}','x','x',${staleAt},${staleAt + 300},'succeeded',${staleAt},${staleAt})`);
+  const scheduled = await fetch(`${base}/__scheduled?cron=${encodeURIComponent("41 * * * *")}`);
+  assert.equal(scheduled.status, 200, "the retention cron runs");
+  await assert.rejects(browser.request(base, "GET", `/api/calls/${staleId}`), /404/, "a call older than the window is gone");
+  assert.equal((await browser.request(base, "GET", `/api/calls/${callId}`)).call.status, "succeeded", "a fresh call survives the sweep");
 
   controller.abort();
 }

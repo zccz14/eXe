@@ -3,7 +3,12 @@ use serde_json::{json, Value};
 /// Execution hygiene, not permission: one call cannot run forever or return an
 /// unbounded amount of output. Fixed on purpose — the trust list is the only gate.
 const MAX_RUNTIME_SECONDS: u64 = 60;
-const MAX_OUTPUT_BYTES: usize = 262_144;
+/// A result has to fit in one D1 row, and D1 caps a row at 2 MB. The sealed,
+/// base64url-encoded envelope is 1.33x its plaintext, so about 1.4 MB of output
+/// is the most that can round-trip inline. Both streams share that budget and
+/// stdout gets it first: the payload (a screenshot, a file) is what matters, an
+/// error message that arrives after it is not.
+const MAX_OUTPUT_BYTES: usize = 1_400_000;
 
 fn failure(code: &str, error: &str) -> String {
     json!({ "ok": false, "code": code, "error": error }).to_string()
@@ -65,16 +70,20 @@ async fn shell(args: &Value) -> String {
     )
     .await
     {
-        Ok(Ok(output)) => json!({
-            "ok": output.status.success(),
-            "output": {
-                "tool": "shell",
-                "exit_code": output.status.code(),
-                "stdout": truncate(&output.stdout, MAX_OUTPUT_BYTES),
-                "stderr": truncate(&output.stderr, MAX_OUTPUT_BYTES),
-            }
-        })
-        .to_string(),
+        Ok(Ok(output)) => {
+            let stdout_bytes = output.stdout.len().min(MAX_OUTPUT_BYTES);
+            let stderr_bytes = output.stderr.len().min(MAX_OUTPUT_BYTES - stdout_bytes);
+            json!({
+                "ok": output.status.success(),
+                "output": {
+                    "tool": "shell",
+                    "exit_code": output.status.code(),
+                    "stdout": truncate(&output.stdout, stdout_bytes),
+                    "stderr": truncate(&output.stderr, stderr_bytes),
+                }
+            })
+            .to_string()
+        }
         Ok(Err(error)) => failure("exec_failed", &error.to_string()),
         Err(_) => failure(
             "timeout",

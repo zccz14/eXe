@@ -14,7 +14,14 @@ import { ApiError, body, empty, json, now } from "./http.ts";
 const OFFLINE_AFTER_SECONDS = 90;
 const CLOCK_SKEW_SECONDS = 300;
 const MAX_CALL_TTL_SECONDS = 3600;
-const MAX_SEALED_CHARS = 96 * 1024;
+/**
+ * The HTTP body of a create request, and therefore the only authority on how big
+ * a command envelope may be. A command is a line of shell; 64 KiB is already
+ * generous. There is deliberately no second constant to drift out of sync with
+ * this one — the old `MAX_SEALED_CHARS = 96 KiB` never fired, because the body
+ * limit rejected the request first.
+ */
+const MAX_CALL_BODY = 64 * 1024;
 
 function str(value: unknown, field: string, max: number): string {
   if (typeof value !== "string" || value.length === 0 || value.length > max) throw new ApiError(400, `${field} is invalid`);
@@ -100,14 +107,14 @@ export async function deviceStatus(env: Env, address: string): Promise<Response>
  * Whether the device will run it is the device's business alone.
  */
 export async function createCall(env: Env, owner: string, address: string, request: Request): Promise<Response> {
-  const input = await body<Record<string, unknown>>(request);
+  const input = await body<Record<string, unknown>>(request, MAX_CALL_BODY);
   const callId = str(input.call_id, "call_id", 64);
   if (!/^[0-9a-zA-Z-]{8,64}$/.test(callId)) throw new ApiError(400, "call_id must be 8-64 url-safe characters");
   const issuer = requireAddress(input.issuer, "issuer");
   const device = requireAddress(input.device, "device");
   if (issuer !== owner) throw new ApiError(403, "a call must be signed by the address that sent it");
   if (device !== address) throw new ApiError(400, "the envelope names another device");
-  const sealed = str(input.sealed, "sealed", MAX_SEALED_CHARS);
+  const sealed = str(input.sealed, "sealed", MAX_CALL_BODY);
   const sig = str(input.sig, "sig", 128);
   const issuedAt = num(input.issued_at, "issued_at");
   const expiresAt = num(input.expires_at, "expires_at");
