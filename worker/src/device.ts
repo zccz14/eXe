@@ -1,202 +1,140 @@
-// Device-facing API: pairing, SSE event stream, receipts, sealed results.
-import {
-  b64u,
-  equalHex,
-  randomBytes,
-  sha256Hex,
-  shortAuthenticationString,
-  unb64u,
-  verifyResultSignature,
-  type SealedResult,
-} from "../../shared/protocol.ts";
-import type { CallRow, DeviceRow, Env } from "./db.ts";
-import { callById, deviceByToken } from "./db.ts";
+// Device-facing API: self-registration, the SSE stream, receipts, sealed results.
+// Every handler authenticates a signed request; no bearer token exists.
+import { verifyResult, type CallEnvelope, type ResultEnvelope } from "../../shared/protocol.ts";
+import type { CallRow, Env } from "./db.ts";
+import { authenticateDevice, callById, touchAgent } from "./db.ts";
 import { ApiError, body, empty, json, now } from "./http.ts";
 
-const PAIRING_TTL_SECONDS = 600;
-const POLL_INTERVAL_SECONDS = 2;
 const STREAM_MAX_SECONDS = 900;
 const DEVICE_OFFLINE_SECONDS = 90;
+const LOST_AFTER_SECONDS = 120;
 
-function isKey(value: unknown): value is string {
-  if (typeof value !== "string" || value.length < 40 || value.length > 60) return false;
-  try {
-    return unb64u(value).length === 32;
-  } catch {
-    return false;
-  }
-}
-function isHash(value: unknown): value is string {
-  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
-}
-function shortLabel(value: unknown, field: string, max: number): string {
+function text(value: unknown, field: string, max: number): string {
   if (typeof value !== "string") throw new ApiError(400, `${field} is required`);
   const trimmed = value.trim();
   if (trimmed.length === 0 || trimmed.length > max) throw new ApiError(400, `${field} must be 1-${max} characters`);
   return trimmed;
 }
-function formatCode(raw: string): string {
-  return `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}`.toUpperCase();
-}
-export function normalizeCode(value: string): string {
-  const cleaned = value.replaceAll(/[\s-]/g, "").toUpperCase();
-  if (!/^[0-9A-F]{12}$/.test(cleaned)) throw new ApiError(400, "enter the 12-character code shown on the device");
-  return formatCode(cleaned);
-}
 
-export async function startPairing(request: Request, env: Env): Promise<Response> {
-  const input = await body<Record<string, unknown>>(request);
-  if (!isKey(input.dev_sig_pub) || !isKey(input.dev_kex_pub)) throw new ApiError(400, "device public keys must be 32-byte base64url");
-  if (!isHash(input.secret_hash) || !isHash(input.token_hash)) throw new ApiError(400, "device digests must be sha256 hex");
-  const hostname = shortLabel(input.hostname, "hostname", 80);
-  const platform = shortLabel(input.platform, "platform", 40);
-  const version = shortLabel(input.version, "version", 20);
-  const id = crypto.randomUUID();
-  const deviceId = crypto.randomUUID();
-  const code = formatCode(sha256Hex(id).slice(0, 12));
-  const expiresAt = now() + PAIRING_TTL_SECONDS;
-  // One live pairing per device key: restarting the agent replaces the previous code.
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM pairings WHERE dev_sig_pub=? AND status='pending'").bind(input.dev_sig_pub),
-    env.DB.prepare("DELETE FROM pairings WHERE expires_at<? ").bind(now() - 86400),
-    env.DB.prepare(
-      "INSERT INTO pairings(id,user_code,secret_hash,token_hash,dev_sig_pub,dev_kex_pub,hostname,platform,version,expires_at,device_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-    ).bind(
-      id,
-      code,
-      input.secret_hash,
-      input.token_hash,
-      input.dev_sig_pub,
-      input.dev_kex_pub,
-      hostname,
-      platform,
-      version,
-      expiresAt,
-      deviceId,
-      now(),
-    ),
-  ]);
-  return json({
-    pairing_id: id,
-    user_code: code,
-    expires_at: expiresAt,
-    interval: POLL_INTERVAL_SECONDS * 1000,
-    verify_uri: `https://${env.AUTH_AUDIENCE}/#/pair`,
-  });
-}
-
-export async function pollPairing(request: Request, env: Env, id: string): Promise<Response> {
-  const header = request.headers.get("authorization") ?? "";
-  if (!header.toLowerCase().startsWith("bearer ")) throw new ApiError(401, "missing device secret");
-  const secretHash = sha256Hex(header.slice(7).trim());
-  const row = await env.DB.prepare("SELECT * FROM pairings WHERE id=?").bind(id).first<{
-    id: string;
-    secret_hash: string;
-    status: string;
-    expires_at: number;
-    approval: string | null;
-    device_id: string | null;
-    account_id: string | null;
-    last_polled_at: number;
-  }>();
-  if (!row || !equalHex(row.secret_hash, secretHash)) throw new ApiError(401, "unknown pairing");
-  if (row.status !== "approved" && row.expires_at <= now()) throw new ApiError(410, "pairing expired; restart the agent");
-  if (row.status === "pending" && now() - row.last_polled_at < POLL_INTERVAL_SECONDS) {
-    throw new ApiError(429, `poll no faster than every ${POLL_INTERVAL_SECONDS} seconds`);
-  }
-  await env.DB.prepare("UPDATE pairings SET last_polled_at=? WHERE id=?").bind(now(), id).run();
-  if (row.status === "approved" && row.approval) {
-    return json({
-      status: "approved",
-      device_id: row.device_id,
-      account_id: row.account_id,
-      approval: JSON.parse(row.approval),
-    });
-  }
-  return json({ status: row.status }, row.status === "pending" ? 202 : 200);
-}
-
-/** Marks calls stranded by a previous boot; the side effect may already have happened. */
-export async function registerBoot(env: Env, device: DeviceRow, bootId: string, version: string | null): Promise<void> {
-  if (device.boot_id !== bootId) {
-    await env.DB.batch([
-      env.DB.prepare(
-        "UPDATE calls SET status='failed', failure_code='device_restarted', error=?, settled_at=? WHERE device_id=? AND status IN ('delivered','received') AND (device_boot_id IS NULL OR device_boot_id<>?)",
-      ).bind("device restarted; the result was lost and the operation may already have happened", now(), device.id, bootId),
-      env.DB.prepare("UPDATE devices SET boot_id=? WHERE id=?").bind(bootId, device.id),
-    ]);
-  }
-  await env.DB.prepare("UPDATE devices SET last_seen_at=?, version=COALESCE(?,version), status='active' WHERE id=?")
-    .bind(now(), version, device.id)
+/** Turns an expired queue into `expired`; signed envelopes have a deadline too. */
+async function sweep(env: Env, address: string): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE calls SET status='expired', settled_at=? WHERE device_address=? AND status IN ('queued','delivered','received') AND expires_at<=?",
+  )
+    .bind(now(), address, now())
     .run();
 }
 
-async function claimCall(env: Env, deviceId: string, bootId: string): Promise<CallRow | null> {
+export async function registerAgent(request: Request, env: Env, address: string): Promise<Response> {
+  await authenticateDevice({ request, env, address });
+  const input = await body<Record<string, unknown>>(request);
+  const info = {
+    hostname: text(input.hostname, "hostname", 80),
+    platform: text(input.platform, "platform", 40),
+    version: text(input.version, "version", 20),
+  };
+  await touchAgent(env, address, info);
+  return json({
+    address,
+    now: now(),
+    offline_after_seconds: DEVICE_OFFLINE_SECONDS,
+    stream_max_seconds: STREAM_MAX_SECONDS,
+  });
+}
+
+async function claimCall(env: Env, address: string): Promise<CallRow | null> {
   const rows = await env.DB.prepare(
-    `UPDATE calls SET status='delivered', device_boot_id=?, delivered_at=?
-     WHERE id=(SELECT id FROM calls WHERE device_id=? AND status='queued' AND expires_at>? ORDER BY created_at,id LIMIT 1)
+    `UPDATE calls SET status='delivered', delivered_at=?
+     WHERE call_id=(SELECT call_id FROM calls WHERE device_address=? AND status='queued' AND expires_at>? ORDER BY created_at,call_id LIMIT 1)
      RETURNING *`,
   )
-    .bind(bootId, now(), deviceId, now())
+    .bind(now(), address, now())
     .all<CallRow>();
   return rows.results[0] ?? null;
 }
 
-async function claimCancellation(env: Env, deviceId: string): Promise<string | null> {
+/**
+ * Delivery is at-least-once: a lost receipt or a dropped stream must not lose a
+ * call. Anything that was handed to this device and never settled is re-sent on
+ * the next stream; the device answers a repeat with the result it already
+ * signed instead of running the tool twice.
+ */
+async function claimReplays(env: Env, address: string): Promise<CallRow[]> {
+  const rows = await env.DB.prepare(
+    `UPDATE calls SET status='delivered', delivered_at=?
+     WHERE device_address=? AND status IN ('queued','delivered') AND expires_at>?
+       AND (delivered_at IS NULL OR delivered_at<=?)
+     RETURNING *`,
+  )
+    .bind(now(), address, now(), now() - LOST_AFTER_SECONDS)
+    .all<CallRow>();
+  return rows.results;
+}
+
+async function claimCancellation(env: Env, address: string): Promise<string | null> {
   const rows = await env.DB.prepare(
     `UPDATE calls SET cancel_notified_at=?
-     WHERE id=(SELECT id FROM calls WHERE device_id=? AND status='delivered' AND cancel_requested_at IS NOT NULL AND cancel_notified_at IS NULL ORDER BY created_at,id LIMIT 1)
-     RETURNING id`,
+     WHERE call_id=(SELECT call_id FROM calls WHERE device_address=? AND status IN ('queued','delivered','received') AND cancel_requested_at IS NOT NULL AND cancel_notified_at IS NULL ORDER BY created_at,call_id LIMIT 1)
+     RETURNING call_id`,
   )
-    .bind(now(), deviceId)
-    .all<{ id: string }>();
-  return rows.results[0]?.id ?? null;
+    .bind(now(), address)
+    .all<{ call_id: string }>();
+  return rows.results[0]?.call_id ?? null;
 }
 
 function sseChunk(event: string, data: unknown): Uint8Array {
   return new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-export async function eventStream(request: Request, env: Env, deviceId: string): Promise<Response> {
-  const device = await deviceByToken(env, deviceId, request).catch(() => {
-    throw new ApiError(401, "invalid device credentials");
-  });
-  const bootId = request.headers.get("x-exe-boot-id") ?? "";
-  if (!/^[0-9a-f-]{36}$/i.test(bootId)) throw new ApiError(400, "x-exe-boot-id must be a UUID");
-  const version = request.headers.get("x-exe-version");
-  await registerBoot(env, device, bootId, version);
+function envelopeOf(call: CallRow): CallEnvelope {
+  return {
+    call_id: call.call_id,
+    issuer: call.issuer,
+    device: call.device_address,
+    issued_at: call.issued_at,
+    expires_at: call.expires_at,
+    sealed: call.sealed,
+    sig: call.sig,
+  };
+}
+
+export async function eventStream(request: Request, env: Env, address: string): Promise<Response> {
+  await authenticateDevice({ request, env, address });
+  await touchAgent(env, address);
+  await sweep(env, address);
 
   const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
   const writer = writable.getWriter();
   const startedAt = Date.now();
+  let lastSeen = 0;
   const pump = async () => {
     try {
-      await writer.write(sseChunk("hello", { device_id: device.id, sas: device.sas, now: now() }));
+      await writer.write(sseChunk("hello", { address, now: now() }));
+      let lastReplay = 0;
       while (Date.now() - startedAt < STREAM_MAX_SECONDS * 1000) {
-        const call = await claimCall(env, device.id, bootId);
+        const call = await claimCall(env, address);
         if (call) {
-          await writer.write(
-            sseChunk("call", {
-              id: call.id,
-              device_id: call.device_id,
-              account_id: call.owner_user_id,
-              eph: call.eph,
-              nonce: call.nonce,
-              ct: call.ct,
-              issued_at: call.issued_at,
-              expires_at: call.expires_at,
-              sig: call.sig,
-            }),
-          );
+          await writer.write(sseChunk("call", envelopeOf(call)));
         } else {
-          const cancelled = await claimCancellation(env, device.id);
-          if (cancelled) await writer.write(sseChunk("cancel", { id: cancelled }));
+          if (Date.now() - lastReplay > 15_000) {
+            lastReplay = Date.now();
+            for (const replay of await claimReplays(env, address)) {
+              await writer.write(sseChunk("call", envelopeOf(replay)));
+            }
+          }
+          const cancelled = await claimCancellation(env, address);
+          if (cancelled) await writer.write(sseChunk("cancel", { call_id: cancelled }));
           else await writer.write(sseChunk("heartbeat", { now: now() }));
+        }
+        if (Date.now() - lastSeen > 30_000) {
+          lastSeen = Date.now();
+          await touchAgent(env, address);
+          await sweep(env, address);
         }
         await sleep(1000);
       }
     } catch {
-      // Client went away or the runtime cancelled the request; nothing to clean up.
+      // The device went away; nothing to clean up — its calls stay re-deliverable.
     } finally {
       await writer.close().catch(() => undefined);
     }
@@ -207,7 +145,6 @@ export async function eventStream(request: Request, env: Env, deviceId: string):
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-store",
       connection: "keep-alive",
-      "x-exe-boot-id": bootId,
     },
   });
 }
@@ -216,70 +153,54 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function heartbeat(request: Request, env: Env, deviceId: string): Promise<Response> {
-  const device = await deviceByToken(env, deviceId, request).catch(() => {
-    throw new ApiError(401, "invalid device credentials");
-  });
-  await env.DB.prepare("UPDATE devices SET last_seen_at=? WHERE id=?").bind(now(), device.id).run();
-  return json({ ok: true, now: now(), offline_after_seconds: DEVICE_OFFLINE_SECONDS });
-}
-
-export async function markReceived(request: Request, env: Env, deviceId: string, callId: string): Promise<Response> {
-  const device = await deviceByToken(env, deviceId, request).catch(() => {
-    throw new ApiError(401, "invalid device credentials");
-  });
+export async function markReceived(request: Request, env: Env, address: string, callId: string): Promise<Response> {
+  await authenticateDevice({ request, env, address });
   const result = await env.DB.prepare(
-    "UPDATE calls SET status='received', received_at=? WHERE id=? AND device_id=? AND status='delivered'",
+    "UPDATE calls SET status='received', received_at=? WHERE call_id=? AND device_address=? AND status IN ('delivered','received')",
   )
-    .bind(now(), callId, device.id)
+    .bind(now(), callId, address)
     .run();
   if (result.meta.changes === 0) throw new ApiError(409, "call is not awaiting a receipt");
   return empty();
 }
 
-interface ResultInput {
-  v?: number;
-  ok?: boolean;
-  eph?: string;
-  nonce?: string;
-  ct?: string;
-  sig?: string;
+function parseResult(input: Record<string, unknown>, callId: string, address: string): ResultEnvelope {
+  if (typeof input.sealed !== "string" || input.sealed.length > 512 * 1024) throw new ApiError(400, "result envelope is malformed");
+  if (typeof input.ok !== "boolean") throw new ApiError(400, "result envelope must state ok");
+  if (typeof input.sig !== "string") throw new ApiError(400, "result envelope is missing a signature");
+  if (typeof input.issued_at !== "number" || !Number.isFinite(input.issued_at)) throw new ApiError(400, "result envelope needs issued_at");
+  if (input.call_id !== callId) throw new ApiError(400, "result does not match the call in the path");
+  if (input.device !== address) throw new ApiError(400, "result is signed for another device");
+  return {
+    call_id: callId,
+    device: address,
+    ok: input.ok,
+    issued_at: Math.trunc(input.issued_at),
+    sealed: input.sealed,
+    sig: input.sig,
+  };
 }
 
-export async function submitResult(request: Request, env: Env, deviceId: string, callId: string): Promise<Response> {
-  const device = await deviceByToken(env, deviceId, request).catch(() => {
-    throw new ApiError(401, "invalid device credentials");
-  });
-  const input = await body<ResultInput>(request);
-  if (input.v !== 1) throw new ApiError(400, "unsupported result envelope version");
-  if (typeof input.ok !== "boolean") throw new ApiError(400, "result envelope must state ok");
-  let eph: Uint8Array;
-  let nonce: Uint8Array;
-  let ciphertext: Uint8Array;
-  try {
-    eph = unb64u(String(input.eph));
-    nonce = unb64u(String(input.nonce));
-    ciphertext = unb64u(String(input.ct));
-  } catch {
-    throw new ApiError(400, "malformed result envelope");
-  }
-  if (eph.length !== 32 || nonce.length !== 12 || ciphertext.length < 17) throw new ApiError(400, "malformed result envelope");
-  if (typeof input.sig !== "string") throw new ApiError(400, "result envelope is missing a signature");
-  if (!verifyResultSignature(device.sig_pub, { callId, deviceId: device.id, ok: input.ok, eph, nonce, ciphertext }, input.sig)) {
-    throw new ApiError(403, "result signature does not match the device key");
-  }
-  const call = await callById(env, callId);
-  if (!call || call.device_id !== device.id) throw new ApiError(404, "unknown call");
-  if (!["delivered", "received"].includes(call.status)) throw new ApiError(409, "call is already settled");
+export async function submitResult(request: Request, env: Env, address: string, callId: string): Promise<Response> {
+  await authenticateDevice({ request, env, address });
+  const result = parseResult(await body<Record<string, unknown>>(request, 512 * 1024), callId, address);
+  if (!verifyResult(result)) throw new ApiError(403, "result signature does not match the device key");
 
-  const envelope: SealedResult = { v: 1, ok: input.ok, eph: b64u(eph), nonce: b64u(nonce), ct: b64u(ciphertext) };
-  // The worker stores the envelope as-is: it holds no key that could open it.
+  const call = await callById(env, callId);
+  if (!call || call.device_address !== address) throw new ApiError(404, "unknown call");
+
+  const canonical = JSON.stringify(result);
+  if (["succeeded", "failed"].includes(call.status)) {
+    // At-least-once delivery: the device is replaying the envelope it signed.
+    if (call.result === canonical) return empty();
+    throw new ApiError(409, "call is already settled with a different result");
+  }
+  if (!["queued", "delivered", "received"].includes(call.status)) throw new ApiError(409, `call is ${call.status}`);
+
   await env.DB.prepare(
-    "UPDATE calls SET envelope=?, sig=?, status=?, settled_at=?, failure_code=NULL WHERE id=? AND status IN ('delivered','received')",
+    "UPDATE calls SET result=?, status=?, settled_at=? WHERE call_id=? AND status IN ('queued','delivered','received')",
   )
-    .bind(JSON.stringify(envelope), input.sig, input.ok ? "succeeded" : "failed", now(), callId)
+    .bind(canonical, result.ok ? "succeeded" : "failed", now(), callId)
     .run();
   return empty();
 }
-
-export { shortAuthenticationString, randomBytes };

@@ -5,14 +5,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthMiniProvider } from "auth-mini-react-components";
 import { LinkitProvider } from "linkit-react-components";
 import { AppLayout } from "@zccz14/ux";
-import { KeyRoundIcon, LanguagesIcon, MonitorIcon } from "lucide-react";
+import { LanguagesIcon, MonitorIcon } from "lucide-react";
 import "./styles.css";
 import { AccountProvider, holdsAccountKey, useAccount } from "./account";
 import { LanguageProvider, useCopy, useLang } from "./i18n";
 import { ExeMark } from "./mark";
 import { DevicePage } from "./pages/Device";
 import { DevicesPage } from "./pages/Devices";
-import { PairPage } from "./pages/Pair";
 import { Button } from "./ui";
 
 // The shared shell renders Linkit widgets, so the console asks AuthMini for both
@@ -63,10 +62,7 @@ function Shell() {
       nav={[
         {
           label: t("nav_devices"),
-          items: [
-            { to: "/devices", label: t("nav_devices"), icon: <MonitorIcon /> },
-            { to: "/pair", label: t("nav_pair"), icon: <KeyRoundIcon /> },
-          ],
+          items: [{ to: "/devices", label: t("nav_devices"), icon: <MonitorIcon /> }],
         },
       ]}
       headerSlot={<LanguageSwitch />}
@@ -74,8 +70,7 @@ function Shell() {
       <KeyBanner />
       <Routes>
         <Route path="/devices" element={<DevicesPage />} />
-        <Route path="/devices/:id" element={<DevicePage />} />
-        <Route path="/pair" element={<PairPage />} />
+        <Route path="/devices/:address" element={<DevicePage />} />
         <Route path="*" element={<Navigate replace to="/devices" />} />
       </Routes>
     </AppLayout>

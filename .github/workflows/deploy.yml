@@ -27,6 +27,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Build console
         run: pnpm build
+        env:
+          # The console is a static Pages app; the relay lives on its own origin.
+          VITE_API_BASE: https://exe.ntnl.io
 
       # Secrets cannot be referenced from a step `if`, so resolve readiness first.
       - name: Check deployment credentials

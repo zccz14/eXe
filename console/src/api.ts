@@ -14,9 +14,12 @@ async function token(sdk: SdkLike): Promise<string> {
   return refreshed.accessToken;
 }
 
+/** The console is a static Pages app; the relay lives on its own origin. */
+const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
+
 export async function api<T>(sdk: SdkLike, path: string, init: RequestInit = {}): Promise<T> {
   const send = async (bearer: string) =>
-    fetch(path, {
+    fetch(`${API_BASE}${path}`, {
       ...init,
       headers: { ...(init.body ? { "content-type": "application/json" } : {}), ...(init.headers ?? {}), authorization: `Bearer ${bearer}` },
     });
@@ -37,70 +40,47 @@ export async function api<T>(sdk: SdkLike, path: string, init: RequestInit = {})
 }
 
 export interface DeviceView {
-  id: string;
+  address: string;
   label: string;
-  hostname: string;
-  platform: string;
+  hostname: string | null;
+  platform: string | null;
   version: string | null;
-  sig_pub: string;
-  kex_pub: string;
-  sas: string;
-  status: string;
   online: boolean;
-  created_at: number;
   last_seen_at: number | null;
+  created_at: number;
+  revoked_at: number | null;
 }
 
 export interface CallView {
-  id: string;
-  device_id: string;
-  name: string;
-  args: string;
+  call_id: string;
+  device: string;
+  issuer: string;
   status: "queued" | "delivered" | "received" | "succeeded" | "failed" | "cancelled" | "expired";
   issued_at: number;
   expires_at: number;
   delivered_at: number | null;
   received_at: number | null;
   settled_at: number | null;
-  failure_code: string | null;
-  error: string | null;
   has_result: boolean;
-}
-
-export interface PairingView {
-  pairing_id: string;
-  user_code: string;
-  hostname: string;
-  platform: string;
-  version: string;
-  status: string;
-  expires_at: number;
-  device_id: string;
-  device_sig_pub: string;
-  device_kex_pub: string;
-  account_sig_pub: string;
-  account_kex_pub: string;
-  sas: string;
 }
 
 export interface Me {
   account_id: string;
   registered: boolean;
-  sig_pub: string | null;
-  kex_pub: string | null;
-  fingerprint: string | null;
+  address: string | null;
   custody: "browser";
 }
 
 export interface SealedEnvelope {
-  v: 1;
+  call_id: string;
+  device: string;
   ok: boolean;
-  eph: string;
-  nonce: string;
-  ct: string;
+  issued_at: number;
+  sealed: string;
+  sig: string;
 }
 
 export interface CallDetail {
   call: CallView;
-  envelope: SealedEnvelope | null;
+  result: SealedEnvelope | null;
 }

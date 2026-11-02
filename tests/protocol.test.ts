@@ -3,170 +3,215 @@ import { test } from "node:test";
 import vectors from "./vectors.json" with { type: "json" };
 import {
   accountTranscript,
-  approvalTranscript,
+  addressOf,
+  agreementPublic,
+  agreementSecret,
+  b58,
   b64u,
+  buildCall,
+  buildResult,
   callTranscript,
+  decodeSecret,
+  encodeSecret,
   hex,
+  hsalsa20,
+  identityFromSeed,
+  isAddress,
+  newIdentity,
   openCall,
   openResult,
+  parseAddress,
+  parseSealed,
+  requestTranscript,
   resultTranscript,
-  sealResult,
-  shortAuthenticationString,
-  unb64u,
+  sha256Hex,
+  signCall,
+  unb58,
   unhex,
-  signAccount,
   verifyAccount,
-  verifyApproval,
   verifyCall,
-  verifyResultSignature,
+  verifyRequest,
+  verifyResult,
 } from "../shared/protocol.ts";
-import { sha256 } from "@noble/hashes/sha2.js";
-import { ed25519 } from "@noble/curves/ed25519.js";
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 
-const callFields = {
-  callId: vectors.call.callId,
-  deviceId: vectors.call.deviceId,
-  accountId: vectors.call.accountId,
-  eph: unb64u(vectors.call.eph),
-  nonce: unb64u(vectors.call.nonce),
-  ciphertext: unb64u(vectors.call.ct),
-  issuedAt: vectors.call.issuedAt,
-  expiresAt: vectors.call.expiresAt,
-};
+const issuer = identityFromSeed(unhex(vectors.keys.issuer_seed));
+const device = identityFromSeed(unhex(vectors.keys.device_seed));
 
-test("call transcript digest is stable and the account signature verifies", () => {
-  assert.equal(hex(sha256(callTranscript(callFields))), vectors.call.transcript_sha256);
-  assert.ok(verifyCall(vectors.keys.account_sig_pub, callFields, vectors.call.sig));
+test("an address is a base58 Ed25519 public key and the secret round trips", () => {
+  assert.equal(addressOf(issuer), vectors.keys.issuer_address);
+  assert.equal(addressOf(device), vectors.keys.device_address);
+  assert.equal(addressOf(issuer).length, 44);
+  assert.ok(isAddress(vectors.keys.issuer_address));
+  assert.equal(isAddress("not-an-address"), false);
+  assert.equal(isAddress(""), false);
+  assert.equal(isAddress(vectors.keys.issuer_seed), false, "hex is not an address");
+
+  const secret = encodeSecret(device);
+  const restored = decodeSecret(secret);
+  assert.equal(hex(restored.seed), vectors.keys.device_seed);
+  assert.equal(addressOf(restored), vectors.keys.device_address);
+
+  // A secret whose trailing public half was swapped must be refused outright.
+  const raw = unb58(secret);
+  raw[40] = raw[40]! ^ 1;
+  assert.throws(() => decodeSecret(b58(raw)));
+
+  // Random 32-byte values survive the base58 round trip, including leading zeros.
+  for (const value of [new Uint8Array(32), new Uint8Array(32).fill(255), unhex(vectors.keys.device_seed)]) {
+    assert.equal(hex(unb58(b58(value))), hex(value));
+  }
 });
 
-test("any change to a signed call is rejected", () => {
-  const flipped = new Uint8Array(callFields.ciphertext);
-  flipped[0] = flipped[0]! ^ 1;
-  assert.equal(verifyCall(vectors.keys.account_sig_pub, { ...callFields, ciphertext: flipped }, vectors.call.sig), false);
-  assert.equal(verifyCall(vectors.keys.account_sig_pub, { ...callFields, deviceId: crypto.randomUUID() }, vectors.call.sig), false);
-  assert.equal(verifyCall(vectors.keys.account_sig_pub, { ...callFields, expiresAt: callFields.expiresAt + 1 }, vectors.call.sig), false);
-  assert.equal(verifyCall(vectors.keys.device_sig_pub, callFields, vectors.call.sig), false);
+test("X25519 is derived from the one Ed25519 key, not stored separately", () => {
+  assert.equal(hex(agreementPublic(device.public)), hex(x25519.getPublicKey(agreementSecret(device.seed))));
+  assert.equal(hex(agreementSecret(device.seed)), hex(ed25519.utils.toMontgomerySecret(device.seed)));
+  assert.notEqual(hex(agreementSecret(device.seed)), hex(device.seed));
 });
 
-test("only the device can open its command, and the cloud sees no tool name", () => {
-  const opened = openCall({
-    deviceKexSk: unhex(vectors.keys.device_kex_seed),
-    callId: callFields.callId,
-    deviceId: callFields.deviceId,
-    accountId: callFields.accountId,
-    eph: callFields.eph,
-    nonce: callFields.nonce,
-    ciphertext: callFields.ciphertext,
-  });
-  const expected = JSON.parse(vectors.call.plaintext) as { name: string; args: string };
-  assert.equal(opened.name, expected.name);
-  assert.equal(opened.args, expected.args);
-  assert.throws(() =>
-    openCall({
-      deviceKexSk: unhex(vectors.keys.account_kex_seed),
-      callId: callFields.callId,
-      deviceId: callFields.deviceId,
-      accountId: callFields.accountId,
-      eph: callFields.eph,
-      nonce: callFields.nonce,
-      ciphertext: callFields.ciphertext,
-    }),
-  );
-  const wire = `${vectors.call.eph}${vectors.call.nonce}${vectors.call.ct}`;
-  assert.equal(wire.includes(expected.name), false, "the wire envelope carries no tool name");
-  assert.equal(wire.includes("hello eXe"), false, "and no arguments either");
+test("HSalsa20 matches the reference vector", () => {
+  assert.equal(hex(hsalsa20(new Uint8Array(32), new Uint8Array(16))), "351f86faa3b988468a850122b65b0acece9c4826806aeee63de9c0da2bd7f91e");
 });
 
-test("account registration proves possession without sending a private key", () => {
+test("the call vector signs and verifies, and any edit breaks it", () => {
+  const call = {
+    call_id: vectors.call.call_id,
+    issuer: vectors.call.issuer,
+    device: vectors.call.device,
+    issued_at: vectors.call.issued_at,
+    expires_at: vectors.call.expires_at,
+    sealed: vectors.call.sealed,
+    sig: vectors.call.sig,
+  };
+  assert.equal(sha256Hex(callTranscript(call)), vectors.call.transcript_sha256);
+  assert.ok(verifyCall(call));
+  assert.equal(call.sig, signCall(issuer.seed, call));
+  assert.equal(verifyCall({ ...call, sig: call.sig.slice(0, -1) + (call.sig.endsWith("a") ? "b" : "a") }), false);
+  assert.equal(verifyCall({ ...call, device: addressOf(newIdentity()) }), false);
+  assert.equal(verifyCall({ ...call, expires_at: call.expires_at + 1 }), false);
+  assert.equal(verifyCall({ ...call, issuer: vectors.keys.device_address }), false, "the device cannot speak for the issuer");
+});
+
+test("only the device opens its command and the wire names nothing", () => {
+  const call = {
+    call_id: vectors.call.call_id,
+    issuer: vectors.call.issuer,
+    device: vectors.call.device,
+    issued_at: vectors.call.issued_at,
+    expires_at: vectors.call.expires_at,
+    sealed: vectors.call.sealed,
+    sig: vectors.call.sig,
+  };
+  const opened = openCall({ seed: device.seed, call });
+  assert.equal(JSON.stringify(opened), vectors.call.plaintext);
+  assert.throws(() => openCall({ seed: issuer.seed, call }), "another key cannot open it");
+
+  const wire = JSON.stringify({ ...call, sealed: undefined }) + vectors.call.sealed;
+  assert.equal(wire.includes("echo"), false, "no tool name on the wire");
+  assert.equal(wire.includes("hello eXe"), false, "no arguments either");
+
+  // The associated data binds the envelope: a different call_id cannot open it.
+  assert.throws(() => openCall({ seed: device.seed, call: { ...call, call_id: "22222222-2222-4222-8222-222222222222" } }));
+  assert.throws(() => openCall({ seed: device.seed, call: { ...call, expires_at: call.expires_at + 1 } }));
+});
+
+test("the result vector is sealed to the issuer and signed by the device", () => {
+  const call = {
+    call_id: vectors.call.call_id,
+    issuer: vectors.call.issuer,
+    device: vectors.call.device,
+    expires_at: vectors.call.expires_at,
+  };
+  const result = {
+    call_id: vectors.result.call_id,
+    device: vectors.result.device,
+    ok: vectors.result.ok,
+    issued_at: vectors.result.issued_at,
+    sealed: vectors.result.sealed,
+    sig: vectors.result.sig,
+  };
+  assert.equal(sha256Hex(resultTranscript(result)), vectors.result.transcript_sha256);
+  assert.ok(verifyResult(result));
+  assert.equal(openResult({ seed: issuer.seed, call, result }), vectors.result.plaintext);
+  assert.throws(() => openResult({ seed: device.seed, call, result }), "the device cannot read it back");
+  assert.equal(verifyResult({ ...result, ok: false }), false, "the outcome is signed, not decorative");
+  assert.equal(verifyResult({ ...result, device: vectors.keys.issuer_address }), false);
+});
+
+test("device requests are self-signed over method, path, address, time and nonce", () => {
+  const auth = {
+    method: vectors.request.method,
+    path: vectors.request.path,
+    address: vectors.request.address,
+    timestamp: vectors.request.timestamp,
+    nonce: vectors.request.nonce,
+  };
+  assert.equal(sha256Hex(requestTranscript(auth)), vectors.request.transcript_sha256);
+  assert.ok(verifyRequest(auth, vectors.request.sig));
+  assert.equal(verifyRequest({ ...auth, method: "GET" }, vectors.request.sig), false);
+  assert.equal(verifyRequest({ ...auth, path: auth.path.replace("/result", "/received") }, vectors.request.sig), false);
+  assert.equal(verifyRequest({ ...auth, timestamp: auth.timestamp + 1 }, vectors.request.sig), false);
+  assert.equal(verifyRequest({ ...auth, nonce: b64u(new Uint8Array(16)) }, vectors.request.sig), false);
+});
+
+test("account registration proves the browser holds the key", () => {
   const fields = {
+    address: vectors.account.address,
     userId: vectors.account.userId,
     nonce: vectors.account.nonce,
-    sigPub: vectors.account.sigPub,
-    kexPub: vectors.account.kexPub,
     issuedAt: vectors.account.issuedAt,
   };
-  assert.equal(hex(sha256(accountTranscript(fields))), vectors.account.transcript_sha256);
-  assert.ok(verifyAccount(vectors.keys.account_sig_pub, fields, vectors.account.sig));
-  assert.equal(verifyAccount(vectors.keys.account_sig_pub, { ...fields, nonce: "other" }, vectors.account.sig), false);
-  assert.equal(verifyAccount(vectors.keys.device_sig_pub, fields, vectors.account.sig), false);
-  assert.equal(JSON.stringify(vectors.account).includes("seed"), false, "vectors carry no private material");
-});
-
-test("approval transcript is stable", () => {
-  const fields = {
-    pairingId: vectors.approval.pairingId,
-    deviceId: vectors.approval.deviceId,
-    accountId: vectors.approval.accountId,
-    accountSigPub: vectors.approval.accountSigPub,
-    accountKexPub: vectors.approval.accountKexPub,
-    deviceSigPub: vectors.approval.deviceSigPub,
-    deviceKexPub: vectors.approval.deviceKexPub,
-    issuedAt: vectors.approval.issuedAt,
-  };
-  assert.equal(hex(sha256(approvalTranscript(fields))), vectors.approval.transcript_sha256);
-  assert.ok(verifyApproval(vectors.keys.account_sig_pub, fields, vectors.approval.sig));
-});
-
-test("sealed results open with the account key and reject tampering", () => {
-  const envelope = { v: 1 as const, ok: vectors.result.ok, eph: vectors.result.eph, nonce: vectors.result.nonce, ct: vectors.result.ct };
-  const plaintext = openResult({
-    accountKexSk: unhex(vectors.keys.account_kex_seed),
-    callId: vectors.result.call_id,
-    deviceId: vectors.result.device_id,
-    envelope,
-  });
-  assert.equal(plaintext, vectors.result.plaintext);
-  assert.throws(() =>
-    openResult({
-      accountKexSk: unhex(vectors.keys.account_kex_seed),
-      callId: "00000000-0000-4000-8000-000000000000",
-      deviceId: vectors.result.device_id,
-      envelope,
-    }),
-  );
-});
-
-test("result signature covers the ciphertext and the outcome", () => {
-  const fields = {
-    callId: vectors.result.call_id,
-    deviceId: vectors.result.device_id,
-    ok: vectors.result.ok,
-    eph: unb64u(vectors.result.eph),
-    nonce: unb64u(vectors.result.nonce),
-    ciphertext: unb64u(vectors.result.ct),
-  };
-  assert.equal(hex(sha256(resultTranscript(fields))), vectors.result.transcript_sha256);
-  assert.ok(verifyResultSignature(vectors.keys.device_sig_pub, fields, vectors.result.sig));
-  const tampered = new Uint8Array(fields.ciphertext);
-  tampered[0] = tampered[0]! ^ 1;
-  assert.equal(verifyResultSignature(vectors.keys.device_sig_pub, { ...fields, ciphertext: tampered }, vectors.result.sig), false);
-  assert.equal(verifyResultSignature(vectors.keys.device_sig_pub, { ...fields, ok: false }, vectors.result.sig), false);
+  assert.equal(sha256Hex(accountTranscript(fields)), vectors.account.transcript_sha256);
+  assert.ok(verifyAccount(fields, vectors.account.sig));
+  assert.equal(verifyAccount({ ...fields, userId: "44444444-4444-4444-8444-444444444444" }, vectors.account.sig), false);
+  assert.equal(JSON.stringify(vectors).match(/seed32|private/i), null, "vectors carry seeds for testing only, never secrets from production");
 });
 
 test("sealing is randomized but still opens", () => {
-  const first = sealResult({
-    callId: vectors.result.call_id,
-    deviceId: vectors.result.device_id,
-    ok: true,
-    accountKexPub: unb64u(vectors.keys.account_kex_pub),
-    plaintext: "{}",
-  });
-  const second = sealResult({
-    callId: vectors.result.call_id,
-    deviceId: vectors.result.device_id,
-    ok: true,
-    accountKexPub: unb64u(vectors.keys.account_kex_pub),
-    plaintext: "{}",
-  });
-  assert.notEqual(first.ct, second.ct);
-  assert.equal(
-    openResult({ accountKexSk: unhex(vectors.keys.account_kex_seed), callId: vectors.result.call_id, deviceId: vectors.result.device_id, envelope: first }),
-    "{}",
-  );
+  const callId = "11111111-1111-4111-8111-111111111111";
+  const make = () =>
+    buildCall({
+      seed: issuer.seed,
+      issuer: addressOf(issuer),
+      device: addressOf(device),
+      callId,
+      name: "echo",
+      args: "{}",
+      issuedAt: 1_700_000_000,
+      expiresAt: 1_700_000_300,
+    });
+  const first = make();
+  const second = make();
+  assert.notEqual(first.sealed, second.sealed);
+  for (const call of [first, second]) {
+    assert.equal(openCall({ seed: device.seed, call }).name, "echo");
+    assert.ok(verifyCall(call));
+  }
 });
 
-test("SAS is deterministic and short", () => {
-  assert.equal(shortAuthenticationString(vectors.keys.account_sig_pub, vectors.keys.device_sig_pub), vectors.sas);
-  assert.match(vectors.sas, /^\d{6}$/);
-  assert.notEqual(shortAuthenticationString(vectors.keys.account_sig_pub, vectors.keys.account_kex_pub), vectors.sas);
+test("a sealed payload carries a fixed header", () => {
+  const bytes = parseSealed(vectors.call.sealed);
+  assert.equal(bytes.nonce.length, 24);
+  assert.equal(bytes.ephemeral.length, 32);
+  assert.equal(bytes.box.length, 48);
+  assert.equal(bytes.iv.length, 12);
+  assert.ok(bytes.body.length >= 16);
+  assert.throws(() => parseSealed(b64u(new Uint8Array(80))));
+});
+
+test("a result built after the fact cannot be swapped between calls", () => {
+  const call = {
+    call_id: vectors.call.call_id,
+    issuer: vectors.call.issuer,
+    device: vectors.call.device,
+    issued_at: vectors.call.issued_at,
+    expires_at: vectors.call.expires_at,
+    sealed: vectors.call.sealed,
+    sig: vectors.call.sig,
+  };
+  const result = buildResult({ seed: device.seed, call, ok: false, plaintext: '{"ok":false,"code":"policy_denied"}', issuedAt: 1_700_000_010 });
+  assert.equal(verifyResult(result), true);
+  assert.equal(openResult({ seed: issuer.seed, call, result }), '{"ok":false,"code":"policy_denied"}');
+  const other = { ...call, call_id: "22222222-2222-4222-8222-222222222222", expires_at: call.expires_at + 60 };
+  assert.throws(() => openResult({ seed: issuer.seed, call: other, result }), "aAD binds the result to the call");
 });
