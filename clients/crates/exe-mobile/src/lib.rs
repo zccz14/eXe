@@ -69,7 +69,8 @@ pub(crate) fn run_inner(dir: PathBuf, cloud: String) -> i32 {
         let cfg = match config::load_or_create() {
             Ok((mut cfg, _)) => {
                 if !cloud.trim().is_empty() {
-                    cfg.cloud = cloud.trim_end_matches('/').to_owned();
+                    cfg.endpoints = config::split_endpoints(&cloud);
+                    cfg.cloud = None;
                     if let Err(error) = config::save(&cfg) {
                         tracing::error!(%error, "could not update the relay address");
                     }
