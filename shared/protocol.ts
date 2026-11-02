@@ -464,6 +464,22 @@ export function accountTranscript(fields: AccountFields): Uint8Array {
 export function signAccount(seed: Uint8Array, fields: AccountFields): string {
   return sign(seed, accountTranscript(fields));
 }
+
+/**
+ * Wire shape of `PUT /api/account`. The access token already carries the user id,
+ * so the body only proves the key: hence snake_case `issued_at` and no `userId`.
+ * Keep this as the single source so the console and the tests cannot drift apart.
+ */
+export interface AccountPayload {
+  address: string;
+  nonce: string;
+  issued_at: number;
+  sig: string;
+}
+
+export function accountPayload(fields: AccountFields, signature: string): AccountPayload {
+  return { address: fields.address, nonce: fields.nonce, issued_at: fields.issuedAt, sig: signature };
+}
 export function verifyAccount(fields: AccountFields, signature: string): boolean {
   try {
     return verifySignature(parseAddress(fields.address), accountTranscript(fields), signature);

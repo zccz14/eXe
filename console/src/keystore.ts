@@ -1,6 +1,7 @@
 // The browser is the only place the account key exists. It signs calls and opens
 // results; the relay only ever sees the address and sealed envelopes.
 import {
+  accountPayload,
   addressOf,
   buildCall,
   decodeSecret,
@@ -9,6 +10,7 @@ import {
   openResult,
   signAccount,
   type AccountFields,
+  type AccountPayload,
   type CallEnvelope,
   type Identity,
   type ResultEnvelope,
@@ -117,10 +119,11 @@ export async function forgetLocalKeys(): Promise<void> {
   cached = null;
 }
 
-export async function signRegistration(userId: string, nonce: string, issuedAt: number): Promise<AccountFields & { sig: string }> {
+/** Signs the registration the relay will store; the body is already wire-shaped. */
+export async function signRegistration(userId: string, nonce: string, issuedAt: number): Promise<AccountPayload> {
   const identity = await localIdentity();
   const fields: AccountFields = { address: addressOf(identity), userId, nonce, issuedAt };
-  return { ...fields, sig: signAccount(identity.seed, fields) };
+  return accountPayload(fields, signAccount(identity.seed, fields));
 }
 
 /** Seals the command to the device address and signs the envelope. */

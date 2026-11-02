@@ -1,6 +1,7 @@
 // Emulates the console: holds the only copy of the account key, signs calls and
 // opens results. Nothing here ever reaches the relay in the clear.
 import {
+  accountPayload,
   addressOf,
   b64u,
   buildCall,
@@ -44,7 +45,7 @@ export function makeBrowser() {
       const response = await fetch(`${base}/api/account`, {
         method: "PUT",
         headers: { ...auth, "content-type": "application/json" },
-        body: JSON.stringify({ address, nonce: fields.nonce, issued_at: fields.issuedAt, sig: signAccount(identity.seed, fields) }),
+        body: JSON.stringify(accountPayload(fields, signAccount(identity.seed, fields))),
       });
       if (!response.ok) throw new Error(`account registration failed: ${response.status} ${await response.text()}`);
       return response.json();
