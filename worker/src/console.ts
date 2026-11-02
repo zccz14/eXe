@@ -79,6 +79,22 @@ function callView(row: CallRow): CallView {
 }
 
 /**
+ * "I have it." The caller taking the result is the end of the call's life: the
+ * relay deletes the row (and any attachment) instead of keeping an archive
+ * nobody asked for. A caller that never asks costs at most the fallback window.
+ */
+export async function ackCall(env: Env, owner: string, callId: string): Promise<Response> {
+  const row = await callById(env, callId);
+  if (!row || row.issuer !== owner) throw new ApiError(404, "call not found");
+  if (row.result === null) throw new ApiError(409, "the relay has no result to hand over yet");
+  if (row.blob_bytes !== null) await env.BLOBS.delete(callId);
+  await env.DB.prepare("DELETE FROM calls WHERE call_id=? AND issuer=?")
+    .bind(callId, owner)
+    .run();
+  return empty();
+}
+
+/**
  * The attachment verbatim, still sealed. Only the console that signed the call
  * may ask for it, and only the console's key can open it afterwards.
  */

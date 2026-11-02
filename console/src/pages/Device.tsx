@@ -4,7 +4,7 @@ import { ArrowLeftIcon, PlayIcon, ShieldAlertIcon, SquareIcon, Trash2Icon } from
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, apiBytes, type CallDetail, type CallView, type DeviceStatus } from "../api";
 import { bookList, bookRemove } from "../book";
-import { localCalls, newCallId, openAttachment, openSealed, sealDeviceCall } from "../keystore";
+import { localCalls, newCallId, openAttachment, openSealed, rememberResult, sealDeviceCall, type LocalCall } from "../keystore";
 import { statusCopy, useCopy } from "../i18n";
 import { Badge, Button, Card, Input, Stat } from "../ui";
 
@@ -58,7 +58,7 @@ export function DevicePage() {
 
   const [plaintext, setPlaintext] = useState<unknown>(null);
   const [attachment, setAttachment] = useState<unknown>(null);
-  const [local, setLocal] = useState<Record<string, { name: string; args: string }>>({});
+  const [local, setLocal] = useState<Record<string, LocalCall>>({});
   const detail = useQuery({
     queryKey: ["call", openCall],
     queryFn: () => api<CallDetail>(`/api/calls/${openCall}`),
@@ -70,6 +70,16 @@ export function DevicePage() {
     void localCalls().then(setLocal);
   }, [calls.data]);
 
+  /**
+   * Taking the result ends the call's life on the relay. This browser keeps its
+   * own copy first, then tells the relay it can forget the row.
+   */
+  const keep = async (callId: string, value: unknown) => {
+    await rememberResult(callId, value);
+    await api(`/api/calls/${callId}/ack`, { method: "POST" }).catch(() => undefined);
+    void localCalls().then(setLocal);
+  };
+
   useEffect(() => {
     setPlaintext(null);
     setAttachment(null);
@@ -77,7 +87,11 @@ export function DevicePage() {
     let cancelled = false;
     openSealed({ call: detail.data.call, result: detail.data.result })
       .then((value) => {
-        if (!cancelled) setPlaintext(value);
+        if (cancelled) return;
+        setPlaintext(value);
+        // A result with an attachment is only half-picked-up; the rest is one
+        // click away, so the row waits for that click (or the fallback sweep).
+        if (attachmentBytes(value) === null && openCall) void keep(openCall, value);
       })
       .catch((openError: Error) => {
         if (!cancelled) setPlaintext({ ok: false, error: openError.message });
@@ -95,8 +109,15 @@ export function DevicePage() {
       const bytes = await apiBytes(`/api/calls/${openCall}/blob`);
       return openAttachment(detail.data.call, detail.data.result, bytes);
     },
-    onSuccess: (value) => setAttachment(value),
+    onSuccess: (value) => {
+      setAttachment(value);
+      if (openCall) void keep(openCall, value);
+    },
   });
+
+  // Calls the relay has already forgotten because this browser picked them up.
+  const relayIds = new Set((calls.data?.calls ?? []).map((call) => call.call_id));
+  const archived = Object.values(local).filter((call) => call.result !== undefined && !relayIds.has(call.call_id));
 
   const send = useMutation({
     mutationFn: async () => {
@@ -263,6 +284,20 @@ export function DevicePage() {
               )}
             </div>
           ))}
+          {archived.length > 0 && (
+            <div className="space-y-2 border-t pt-3">
+              <div className="text-sm font-medium">{t("local_history")}</div>
+              <p className="text-xs text-muted-foreground">{t("local_history_body")}</p>
+              {archived.map((call) => (
+                <details key={call.call_id} className="rounded-lg bg-muted/50 p-3 text-xs">
+                  <summary className="cursor-pointer font-mono">
+                    {call.call_id.slice(0, 8)} · {call.name}
+                  </summary>
+                  <pre className="mt-2 overflow-x-auto font-mono text-xs">{JSON.stringify(call.result, null, 2)}</pre>
+                </details>
+              ))}
+            </div>
+          )}
         </div>
       </section>
     </div>

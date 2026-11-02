@@ -120,6 +120,19 @@ export interface LocalCall {
   name: string;
   args: string;
   issued_at: number;
+  /** The opened result, kept here because the relay deletes the call on pickup. */
+  result?: unknown;
+}
+
+/**
+ * This browser's own archive. The relay is an exchange, not an archive: once the
+ * result is picked up the row is gone, so whoever wants the history keeps it.
+ */
+export async function rememberResult(callId: string, result: unknown): Promise<void> {
+  const db = await openDb();
+  const existing = await idbGet<LocalCall>(db, KEY_STORE, `call:${callId}`);
+  if (!existing) return;
+  await idbPut(db, KEY_STORE, `call:${callId}`, { ...existing, result });
 }
 
 async function rememberCall(call: LocalCall): Promise<void> {
