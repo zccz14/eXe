@@ -165,6 +165,39 @@ pub async fn run(config: Config) -> Result<()> {
             }
         });
     }
+    // SIGHUP is the fast path; the file itself is the truth. A human may edit the
+    // list in an editor, a script may write it, another machine may drop it in —
+    // none of those send a signal, and "add the address and it works" has to hold
+    // on every platform, not just where a shell can send SIGHUP.
+    {
+        let trust = trust.clone();
+        let notify = reload.clone();
+        tokio::spawn(async move {
+            let path = config::config_path();
+            let mut seen = stamp(&path);
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                let now = stamp(&path);
+                if now == seen {
+                    continue;
+                }
+                seen = now;
+                match config::load() {
+                    Ok(fresh) => {
+                        let count = fresh.trust.len();
+                        if let Ok(mut current) = trust.write() {
+                            *current = fresh.trust.clone();
+                        }
+                        info!(callers = count, "trust reloaded from disk; re-registering");
+                        notify.notify_one();
+                    }
+                    Err(error) => {
+                        warn!(%error, "the configuration changed but could not be read")
+                    }
+                }
+            }
+        });
+    }
     let mut backoff = 1u64;
     // `None` means "pick an endpoint again": at startup, and after anything that
     // looks like the route rather than the request being the problem.
@@ -307,9 +340,16 @@ impl Client {
         let mut buffer: Vec<u8> = Vec::with_capacity(8192);
         loop {
             tokio::select! {
-                // Dropping the stream and coming back through the loop is the
-                // cheapest way to re-register with a fresh trust list.
-                _ = reload.notified() => return Ok(()),
+                // Re-register in place. The stream says nothing about who is
+                // trusted, so there is no reason to drop it — and dropping it
+                // would leave a window where the relay still holds the old copy
+                // and refuses the address that was just added.
+                _ = reload.notified() => {
+                    match self.register().await {
+                        Ok(()) => info!("re-registered with the new trust list"),
+                        Err(error) => warn!(%error, "re-registering after a trust change failed"),
+                    }
+                }
                 chunk = stream.next() => {
                     let Some(chunk) = chunk else { return Ok(()) };
                     let chunk = chunk.context("event stream failed")?;
@@ -538,6 +578,18 @@ impl Client {
             Err(error) => warn!(call = call.call_id.as_str(), %error, "result upload failed"),
         }
     }
+}
+
+/// Cheap "was the file touched" stamp: mtime plus length, never a hash.
+fn stamp(path: &std::path::Path) -> Option<(u128, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some((mtime, meta.len()))
 }
 
 fn find_frame_end(buffer: &[u8]) -> Option<usize> {
