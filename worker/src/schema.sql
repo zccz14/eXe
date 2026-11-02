@@ -44,3 +44,6 @@ CREATE TABLE IF NOT EXISTS calls (
 CREATE INDEX IF NOT EXISTS calls_queued ON calls(device_address, status, created_at);
 CREATE INDEX IF NOT EXISTS calls_issuer ON calls(issuer, created_at DESC);
 CREATE INDEX IF NOT EXISTS calls_device_recent ON calls(device_address, created_at DESC);
+-- The retention cron sweeps settled calls by age; without this it would scan the
+-- whole table once an hour.
+CREATE INDEX IF NOT EXISTS calls_retention ON calls(status, settled_at);

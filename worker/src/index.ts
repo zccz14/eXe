@@ -1,8 +1,8 @@
 import * as consoleApi from "./console.ts";
-import { authenticateConsole, type Env } from "./db.ts";
+import { authenticateConsole, deleteSettledCalls, type Env } from "./db.ts";
 import * as device from "./device.ts";
 import * as releases from "./releases.ts";
-import { ApiError, failure, json } from "./http.ts";
+import { ApiError, failure, json, now } from "./http.ts";
 import pkg from "../../package.json" with { type: "json" };
 
 /** The console is served from Pages, so it is a different origin than the relay. */
@@ -34,7 +34,22 @@ function withCors(request: Request, env: Env, response: Response): Response {
 const ADDRESS = "([1-9A-HJ-NP-Za-km-z]{32,64})";
 const CALL_ID = "([0-9a-zA-Z-]{8,64})";
 
+/** How long a settled call stays readable. D1 is 10 GB and a row can be megabytes. */
+const CALL_RETENTION_DAYS = 7;
+/** Rows per sweep: every deleted row is a row written, so this is a budget. */
+const RETENTION_BATCH = 2000;
+
 export default {
+  /**
+   * Retention, hourly. A call that is over and older than the window is deleted;
+   * nothing queued, received or unsettled is ever touched. Firing once an hour
+   * rather than once a day keeps a backlog from growing faster than the sweeper.
+   */
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    const deleted = await deleteSettledCalls(env, now() - CALL_RETENTION_DAYS * 24 * 60 * 60, RETENTION_BATCH);
+    console.log(`retention: deleted ${deleted} settled calls older than ${CALL_RETENTION_DAYS} days`);
+  },
+
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;

@@ -90,6 +90,25 @@ export async function abandonOrphans(env: Env, address: string, runId: string): 
 }
 
 /** Records that an address is alive; the relay stores nothing else about it. */
+/**
+ * The only delete path in the whole relay. A call is evidence, so nothing here
+ * removes a row that could still be settled or retried; what it removes is a
+ * call that is already over and older than the window. Retention is what keeps
+ * "one relay, one D1 database" true: a result can now be megabytes, and `calls`
+ * is also the only record of who talked to whom, so an unbounded table is both
+ * a bill and a liability.
+ */
+export async function deleteSettledCalls(env: Env, olderThan: number, limit: number): Promise<number> {
+  const result = await env.DB.prepare(
+    "DELETE FROM calls WHERE call_id IN (" +
+      "SELECT call_id FROM calls WHERE status IN ('succeeded','failed','cancelled','expired','lost') " +
+      "AND settled_at IS NOT NULL AND settled_at < ? ORDER BY settled_at LIMIT ?)",
+  )
+    .bind(olderThan, limit)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
 export async function touchDevice(env: Env, address: string, info?: DeviceInfo): Promise<void> {
   const stamp = now();
   if (info) {

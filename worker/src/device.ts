@@ -16,6 +16,12 @@ const DEVICE_OFFLINE_SECONDS = 90;
 /** How long a connection waits before handing the same call over again. */
 const RESEND_AFTER_SECONDS = 120;
 const PENDING_LIMIT = 16;
+/**
+ * A result travels in one request and lives in one D1 row, next to the call's own
+ * envelope (up to 64 KiB). A row is capped at 2 MB by D1, so the body cap leaves
+ * room for that envelope instead of discovering the ceiling as a 500.
+ */
+const MAX_RESULT_BODY = 1_900_000;
 /** A device never needs to trust more issuers than this. */
 const MAX_TRUST_ENTRIES = 64;
 
@@ -214,7 +220,7 @@ export async function markReceived(request: Request, env: Env, address: string, 
 }
 
 function parseResult(input: Record<string, unknown>, callId: string, address: string): ResultEnvelope {
-  if (typeof input.sealed !== "string" || input.sealed.length > 512 * 1024) throw new ApiError(400, "result envelope is malformed");
+  if (typeof input.sealed !== "string" || input.sealed.length === 0) throw new ApiError(400, "result envelope is malformed");
   if (typeof input.ok !== "boolean") throw new ApiError(400, "result envelope must state ok");
   if (typeof input.sig !== "string") throw new ApiError(400, "result envelope is missing a signature");
   if (typeof input.issued_at !== "number" || !Number.isFinite(input.issued_at)) throw new ApiError(400, "result envelope needs issued_at");
@@ -232,7 +238,7 @@ function parseResult(input: Record<string, unknown>, callId: string, address: st
 
 export async function submitResult(request: Request, env: Env, address: string, callId: string): Promise<Response> {
   await authenticateDevice({ request, env, address });
-  const result = parseResult(await body<Record<string, unknown>>(request, 512 * 1024), callId, address);
+  const result = parseResult(await body<Record<string, unknown>>(request, MAX_RESULT_BODY), callId, address);
   if (!verifyResult(result)) throw new ApiError(403, "result signature does not match the device key");
 
   const call = await callById(env, callId);
