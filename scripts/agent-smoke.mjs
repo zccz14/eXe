@@ -106,12 +106,12 @@ async function main() {
     assert.equal(sysinfoResult.opened.output.tool, "sysinfo");
     assert.equal(sysinfoResult.opened.output.hostname, "smoke-host");
 
-    // Default policy denies the shell even though the signature is valid.
-    const bash = await browser.call(base, auth, deviceAddress, "bash", { command: "id" });
+    // There is no local permission list: a trusted signature runs the shell too.
+    const bash = await browser.call(base, auth, deviceAddress, "bash", { command: "printf smoke" });
     const bashResult = await settle(bash.call.call_id);
-    assert.equal(bashResult.opened.ok, false);
-    assert.equal(bashResult.opened.code, "policy_denied");
-    assert.equal(bashResult.call.status, "failed", "the signed outcome, not a decryption, sets the status");
+    assert.equal(bashResult.opened.ok, true);
+    assert.equal(bashResult.opened.output.stdout, "smoke");
+    assert.equal(bashResult.call.status, "succeeded", "the signed outcome sets the status");
     console.log("agent smoke: ok");
   } catch (error) {
     console.error("FAILED:", error instanceof Error ? error.message : error);

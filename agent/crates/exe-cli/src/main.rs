@@ -1,8 +1,6 @@
 use anyhow::{bail, Result};
 use exe::{config, run};
 use exe_core::parse_address;
-use exe_core::policy::Policy;
-use exe_core::protocol::PolicyDecision;
 
 const HELP: &str = "\
 exe — eXe device agent
@@ -12,8 +10,7 @@ USAGE:
     exe init             Create the key/config and print this device's address
     exe trust <address>  Allow calls signed by this address (repeatable)
     exe status           Show address, trust list and relay
-    exe doctor           Check key, trust, policy and relay reachability
-    exe policy           Print the local policy path and contents
+    exe doctor           Check key, trust list and relay reachability
     exe forget           Delete the local key (the console can still call this address)
     exe version          Print the agent version
 ";
@@ -30,16 +27,13 @@ async fn main() -> Result<()> {
     let command = args.next().unwrap_or_else(|| "run".into());
     match command.as_str() {
         "run" => {
-            config::ensure_policy()?;
             let (cfg, created) = config::load_or_create()?;
             announce(&cfg, created);
             run::run(cfg).await
         }
         "init" => {
-            config::ensure_policy()?;
             let (cfg, created) = config::load_or_create()?;
             announce(&cfg, created);
-            println!("  Policy:  {}", config::policy_path().display());
             println!();
             println!("  Next: add the address above in the console, then give this device the");
             println!("  console's address with `exe trust <address>` and run `exe run`.");
@@ -67,12 +61,6 @@ async fn main() -> Result<()> {
         }
         "status" => status(),
         "doctor" => doctor().await,
-        "policy" => {
-            let path = config::ensure_policy()?;
-            println!("{}", path.display());
-            print!("{}", std::fs::read_to_string(path)?);
-            Ok(())
-        }
         "forget" => {
             let path = config::config_path();
             if path.exists() {
@@ -140,7 +128,6 @@ fn status() -> Result<()> {
                     println!("trust[{index}]      {address}{label}");
                 }
             }
-            println!("policy        {}", config::policy_path().display());
         }
         Err(_) => println!("no key yet; run `exe init`"),
     }
@@ -162,18 +149,6 @@ async fn doctor() -> Result<()> {
     }
     if cfg.trust.is_empty() {
         println!("trust         empty — every call will be refused");
-    }
-
-    let policy_path = config::ensure_policy()?;
-    let policy = Policy::parse(&std::fs::read_to_string(&policy_path)?)?;
-    println!(
-        "policy        {} (allow {:?}, deny {:?})",
-        policy_path.display(),
-        policy.allow,
-        policy.deny
-    );
-    if policy.decide("echo") != PolicyDecision::Allow {
-        bail!("policy denies `echo`; the console cannot verify this device");
     }
 
     let client = reqwest::Client::builder()

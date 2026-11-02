@@ -1,6 +1,6 @@
 [package]
 name = "exe-core"
-description = "eXe device protocol, cryptography and policy"
+description = "eXe device protocol and cryptography"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -63,10 +63,6 @@ pub fn config_dir() -> PathBuf {
 pub fn config_path() -> PathBuf {
     config_dir().join("config.toml")
 }
-pub fn policy_path() -> PathBuf {
-    config_dir().join("policy.toml")
-}
-
 pub fn load() -> Result<Config> {
     let path = config_path();
     let text = std::fs::read_to_string(&path)
@@ -109,20 +105,6 @@ pub fn save(config: &Config) -> Result<()> {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
-}
-
-pub fn ensure_policy() -> Result<std::path::PathBuf> {
-    let path = policy_path();
-    if !path.exists() {
-        std::fs::create_dir_all(config_dir())?;
-        std::fs::write(&path, exe_core::policy::DEFAULT_TOML)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        }
-    }
-    Ok(path)
 }
 
 pub fn hostname() -> String {
