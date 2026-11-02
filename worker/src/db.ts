@@ -106,4 +106,3 @@ export function newToken(): string {
   return b64u(randomBytes(32));
 }
 
-export { unb64u };
