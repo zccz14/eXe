@@ -26,6 +26,8 @@
     "test:integration": "node --experimental-strip-types scripts/integration.mjs",
     "test:agent": "cargo build --manifest-path agent/Cargo.toml && node --experimental-strip-types scripts/agent-smoke.mjs",
     "db:init": "wrangler d1 execute exe --file worker/src/schema.sql --remote",
-    "db:init:local": "wrangler d1 execute exe --file worker/src/schema.sql --local"
+    "db:init:local": "wrangler d1 execute exe --file worker/src/schema.sql --local",
+    "version:sync": "node scripts/version.mjs",
+    "version:check": "node scripts/version.mjs --check"
   }
 }

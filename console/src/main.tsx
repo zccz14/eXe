@@ -65,7 +65,12 @@ function Shell() {
           items: [{ to: "/devices", label: t("nav_devices"), icon: <MonitorIcon /> }],
         },
       ]}
-      headerSlot={<LanguageSwitch />}
+      headerSlot={
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">v{__APP_VERSION__}</span>
+          <LanguageSwitch />
+        </div>
+      }
     >
       <KeyBanner />
       <Routes>

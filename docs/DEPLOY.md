@@ -56,6 +56,20 @@ token audience 必须与它逐字一致。
 
   旧数据不解密、不迁移：它属于旧线格式，密钥与报文都对不上。
 
+## 版本
+
+**整个产品只有一个版本号**：根 `package.json` 的 `version`。控制台 `console/package.json`、
+Rust workspace（`agent/Cargo.toml` 与 `Cargo.lock`）、tag、Worker `/api/health` 全部由它派生，
+不允许任何组件单独前进。
+
+```sh
+pnpm version:sync -- 0.2.0   # 一次改全部
+pnpm version:check           # CI 跑这个；有任何漂移就失败
+```
+
+发布走 GitHub Release：打 `v<version>` tag 触发 `release.yml`，它先校验 tag 与
+`package.json` 一致，再交叉编译五平台产物并发布。
+
 ## 日常发布
 
 ```sh

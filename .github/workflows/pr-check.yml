@@ -22,6 +22,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Typecheck worker and console
         run: pnpm typecheck
+      - name: Every component shares one version
+        run: pnpm version:check
       - name: Protocol tests
         run: pnpm test
       - name: Build console

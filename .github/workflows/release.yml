@@ -9,7 +9,23 @@ permissions:
   contents: write
 
 jobs:
+  version:
+    name: tag matches the product version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare the tag with package.json
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "v$version" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match package.json v$version"
+            echo "every eXe component shares one version; bump it with pnpm version:sync -- <X.Y.Z>"
+            exit 1
+          fi
+          echo "version v$version"
+
   desktop:
+    needs: [version]
     name: exe ${{ matrix.target }}
     strategy:
       fail-fast: false
