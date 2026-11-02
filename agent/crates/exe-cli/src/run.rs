@@ -14,6 +14,24 @@ use crate::config::{self, Config};
 
 type Tasks = Arc<Mutex<HashMap<String, JoinHandle<()>>>>;
 
+/// Delivery is at-least-once: a lost receipt makes the cloud re-deliver the same
+/// `call_id`. Execution must therefore be idempotent within one process — a
+/// repeat returns the stored envelope instead of running the tool again.
+type Results = Arc<Mutex<HashMap<String, String>>>;
+
+const REMEMBERED_RESULTS: usize = 256;
+
+async fn remember(results: &Results, call_id: &str, envelope: String) {
+    let mut results = results.lock().await;
+    if results.len() >= REMEMBERED_RESULTS {
+        let oldest = results.keys().next().cloned();
+        if let Some(oldest) = oldest {
+            results.remove(&oldest);
+        }
+    }
+    results.insert(call_id.to_owned(), envelope);
+}
+
 pub async fn run(config: Config) -> Result<()> {
     let keys = config.keys()?;
     let account_sig_pub = config.account_sig_key()?;
@@ -36,6 +54,7 @@ pub async fn run(config: Config) -> Result<()> {
         .user_agent(concat!("exe/", env!("CARGO_PKG_VERSION")))
         .build()?;
     let tasks: Tasks = Arc::default();
+    let results: Results = Arc::default();
     let boot = uuid::Uuid::new_v4().to_string();
 
     let _heartbeat = {
@@ -70,6 +89,7 @@ pub async fn run(config: Config) -> Result<()> {
             &policy,
             &boot,
             &tasks,
+            &results,
         )
         .await
         {
@@ -93,6 +113,7 @@ async fn listen(
     policy: &Policy,
     boot: &str,
     tasks: &Tasks,
+    results: &Results,
 ) -> Result<()> {
     let url = format!("{}/v1/devices/{}/events", config.base_url, config.device_id);
     let response = client
@@ -126,6 +147,7 @@ async fn listen(
                         account_kex_pub,
                         policy,
                         tasks,
+                        results,
                     )
                     .await;
                 }
@@ -166,6 +188,7 @@ async fn handle(
     account_kex_pub: &[u8],
     policy: &Policy,
     tasks: &Tasks,
+    results: &Results,
 ) {
     match event {
         Event::Hello | Event::Heartbeat => {}
@@ -195,8 +218,18 @@ async fn handle(
             let policy = policy.clone();
             let account_kex_pub = account_kex_pub.to_vec();
             let call_id = call.id.clone();
+            let results = results.clone();
             let task = tokio::spawn(async move {
-                execute_call(&client, &config, &keys, &account_kex_pub, &policy, call).await;
+                execute_call(
+                    &client,
+                    &config,
+                    &keys,
+                    &account_kex_pub,
+                    &policy,
+                    call,
+                    results,
+                )
+                .await;
             });
             tasks.insert(call_id, task);
         }
@@ -210,11 +243,26 @@ async fn execute_call(
     account_kex_pub: &[u8],
     policy: &Policy,
     call: CallEnvelope,
+    results: Results,
 ) {
     let base = format!(
         "{}/v1/devices/{}/calls/{}",
         config.base_url, config.device_id, call.id
     );
+    if let Some(cached) = results.lock().await.get(&call.id).cloned() {
+        info!(
+            call = call.id.as_str(),
+            "duplicate delivery; replaying the stored result"
+        );
+        let _ = client
+            .post(format!("{base}/result"))
+            .bearer_auth(&config.token)
+            .header("content-type", "application/json")
+            .body(cached)
+            .send()
+            .await;
+        return;
+    }
     let _ = client
         .post(format!("{base}/received"))
         .bearer_auth(&config.token)
@@ -254,6 +302,12 @@ async fn execute_call(
                 .await;
             match response {
                 Ok(response) if response.status().is_success() => {
+                    remember(
+                        &results,
+                        &call.id,
+                        serde_json::to_string(&envelope).unwrap_or_default(),
+                    )
+                    .await;
                     info!(call = call.id.as_str(), "result delivered")
                 }
                 Ok(response) => {
