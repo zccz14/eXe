@@ -14,12 +14,19 @@ import { DevicePage } from "./pages/Device";
 import { DevicesPage } from "./pages/Devices";
 import { Button } from "./ui";
 
-// The shared shell renders Linkit widgets, so the console asks AuthMini for both
-// audiences; the worker still only accepts tokens that carry its own audience.
-const AUDIENCES = (import.meta.env.VITE_AUTH_AUDIENCES ?? "exe.ntnl.io,linkit.ntnl.io")
-  .split(",")
-  .map((value: string) => value.trim())
-  .filter(Boolean);
+// The shared shell renders Linkit widgets, so the console asks AuthMini for those
+// audiences too; the worker still only accepts tokens that carry its own audience.
+// AuthMini also requires the callback hostname itself, which is this page's origin:
+// without it the login page rejects the request outright.
+const AUDIENCES = [
+  ...new Set([
+    ...(import.meta.env.VITE_AUTH_AUDIENCES ?? "exe.ntnl.io,linkit.ntnl.io")
+      .split(",")
+      .map((value: string) => value.trim())
+      .filter(Boolean),
+    window.location.hostname,
+  ]),
+].sort();
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 0, refetchOnWindowFocus: false } } });
 
