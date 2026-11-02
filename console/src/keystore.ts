@@ -12,11 +12,10 @@ import {
   type Identity,
   type ResultEnvelope,
 } from "../../shared/protocol.ts";
+import { KEY_STORE, idbDelete, idbGet, idbKeys, idbPut, openDb } from "./db";
 
 // A fresh database: the store that held an "account" key belongs to a model that
 // no longer exists, and its key has nothing left to sign for.
-const DB_NAME = "exe-console";
-const STORE = "console";
 const RECORD = "self";
 
 interface StoredRecord {
@@ -28,31 +27,6 @@ interface StoredRecord {
 }
 
 let cached: Promise<Identity> | null = null;
-
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(STORE);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-function read(db: IDBDatabase, key: string): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const request = db.transaction(STORE, "readonly").objectStore(STORE).get(key);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-function write(db: IDBDatabase, key: string, value: unknown): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const request = db.transaction(STORE, "readwrite").objectStore(STORE).put(value, key);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
-}
 
 async function freshIdentity(db: IDBDatabase): Promise<Identity> {
   const identity = newIdentity();
@@ -68,7 +42,7 @@ async function freshIdentity(db: IDBDatabase): Promise<Identity> {
     address: addressOf(identity),
     created_at: Math.floor(Date.now() / 1000),
   };
-  await write(db, RECORD, record);
+  await idbPut(db, KEY_STORE, RECORD, record);
   return identity;
 }
 
@@ -83,7 +57,7 @@ function unb64uText(value: string): Uint8Array {
 
 async function load(): Promise<Identity> {
   const db = await openDb();
-  const record = (await read(db, RECORD)) as StoredRecord | undefined;
+  const record = await idbGet<StoredRecord>(db, KEY_STORE, RECORD);
   if (record) {
     try {
       const plain = new Uint8Array(
@@ -110,11 +84,7 @@ export async function localAddress(): Promise<string> {
 /** Discards this browser's key. Results sealed to it become unreadable here. */
 export async function forgetLocalKeys(): Promise<void> {
   const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
-    const request = db.transaction(STORE, "readwrite").objectStore(STORE).delete(RECORD);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
+  await idbDelete(db, KEY_STORE, RECORD);
   cached = null;
 }
 
@@ -153,20 +123,16 @@ export interface LocalCall {
 
 async function rememberCall(call: LocalCall): Promise<void> {
   const db = await openDb();
-  await write(db, `call:${call.call_id}`, call);
+  await idbPut(db, KEY_STORE, `call:${call.call_id}`, call);
 }
 
 export async function localCalls(): Promise<Record<string, LocalCall>> {
   const db = await openDb();
-  const keys = await new Promise<IDBValidKey[]>((resolve, reject) => {
-    const request = db.transaction(STORE, "readonly").objectStore(STORE).getAllKeys();
-    request.onsuccess = () => resolve(request.result as IDBValidKey[]);
-    request.onerror = () => reject(request.error);
-  });
+  const keys = await idbKeys(db, KEY_STORE);
   const out: Record<string, LocalCall> = {};
   for (const key of keys) {
     if (typeof key !== "string" || !key.startsWith("call:")) continue;
-    const value = (await read(db, key)) as LocalCall | undefined;
+    const value = await idbGet<LocalCall>(db, KEY_STORE, key);
     if (value) out[value.call_id] = value;
   }
   return out;

@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckIcon, ChevronRightIcon, CopyIcon, FingerprintIcon, PlusIcon, TerminalIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { api, type DeviceView, type Me } from "../api";
+import { api, type DeviceStatus, type Me } from "../api";
+import { bookList, bookPut, looksLikeAddress, type BookEntry } from "../book";
 import { DownloadCard } from "../components/DownloadCard";
 import { useCopy } from "../i18n";
 import { Badge, Button, Card, Input, Stat } from "../ui";
@@ -53,32 +54,55 @@ function ConsoleAddressCard() {
   );
 }
 
-export function DevicesPage() {
+/** The label comes from this browser; the online state comes from the relay, per address. */
+function DeviceCard({ entry }: { entry: BookEntry }) {
   const t = useCopy();
   const navigate = useNavigate();
+  const status = useQuery({
+    queryKey: ["device", entry.address],
+    queryFn: () => api<DeviceStatus>(`/api/devices/${entry.address}`),
+    refetchInterval: 5000,
+  });
+  const device = status.data;
+
+  return (
+    <Card
+      className="cursor-pointer space-y-3 transition hover:border-foreground/30"
+      {...{ onClick: () => navigate(`/devices/${entry.address}`) }}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate font-medium">{entry.label}</div>
+          <div className="truncate font-mono text-xs text-muted-foreground">{entry.address}</div>
+        </div>
+        <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {device?.online ? <Badge tone="ok">{t("online")}</Badge> : <Badge tone="muted">{t("offline")}</Badge>}
+        {device?.platform && <Badge>{device.platform}</Badge>}
+      </div>
+      <Stat label={t("last_seen")} value={device?.last_seen_at ? new Date(device.last_seen_at * 1000).toLocaleString() : "—"} />
+    </Card>
+  );
+}
+
+export function DevicesPage() {
+  const t = useCopy();
   const queryClient = useQueryClient();
   const [address, setAddress] = useState("");
   const [label, setLabel] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
 
-  const devices = useQuery({
-    queryKey: ["devices"],
-    queryFn: () => api<{ devices: DeviceView[] }>("/api/devices"),
-    refetchInterval: 5000,
-  });
-  const list = devices.data?.devices ?? [];
+  const book = useQuery({ queryKey: ["book"], queryFn: bookList });
+  const entries = book.data ?? [];
 
   const add = useMutation({
-    mutationFn: () =>
-      api<{ device: DeviceView }>("/api/devices", {
-        method: "POST",
-        body: JSON.stringify({ address: address.trim(), label: label.trim() || undefined }),
-      }),
+    mutationFn: () => bookPut(address.trim(), label),
     onSuccess: () => {
       setAddress("");
       setLabel("");
       setNotice(null);
-      void queryClient.invalidateQueries({ queryKey: ["devices"] });
+      void queryClient.invalidateQueries({ queryKey: ["book"] });
     },
     onError: (error: Error) => setNotice(error.message),
   });
@@ -117,7 +141,13 @@ export function DevicesPage() {
           />
           <Button
             className="shrink-0 whitespace-nowrap"
-            onClick={() => add.mutate()}
+            onClick={() => {
+              if (!looksLikeAddress(address)) {
+                setNotice(t("device_address"));
+                return;
+              }
+              add.mutate();
+            }}
             disabled={add.isPending || address.trim().length < 32}
           >
             <TerminalIcon className="size-4" />
@@ -125,36 +155,16 @@ export function DevicesPage() {
           </Button>
         </div>
         {notice && <p className="text-sm text-destructive">{notice}</p>}
+        <p className="text-xs text-muted-foreground">{t("book_note")}</p>
       </Card>
 
-      {devices.isError && (
-        <div className="rounded-xl border border-destructive/40 p-4 text-sm text-destructive">{t("devices_error")}</div>
-      )}
-
-      {list.length === 0 && !devices.isError && (
+      {entries.length === 0 && (
         <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">{t("no_devices")}</div>
       )}
 
       <div className="grid gap-3 sm:grid-cols-2">
-        {list.map((device) => (
-          <Card
-            key={device.address}
-            className="cursor-pointer space-y-3 transition hover:border-foreground/30"
-            {...{ onClick: () => navigate(`/devices/${device.address}`) }}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="truncate font-medium">{device.label}</div>
-                <div className="truncate font-mono text-xs text-muted-foreground">{device.address}</div>
-              </div>
-              <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" />
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {device.online ? <Badge tone="ok">{t("online")}</Badge> : <Badge tone="muted">{t("offline")}</Badge>}
-              {device.platform && <Badge>{device.platform}</Badge>}
-            </div>
-            <Stat label={t("last_seen")} value={device.last_seen_at ? new Date(device.last_seen_at * 1000).toLocaleString() : "—"} />
-          </Card>
+        {entries.map((entry) => (
+          <DeviceCard key={entry.address} entry={entry} />
         ))}
       </div>
     </div>
