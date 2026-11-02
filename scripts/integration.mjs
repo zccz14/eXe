@@ -41,13 +41,18 @@ async function main() {
   spawnSync("npx", ["wrangler", "d1", "execute", "exe", "--local", "--file", "worker/src/schema.sql"], { stdio: "inherit" });
   const dev = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--ip", "127.0.0.1"], {
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+    env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" },
+    detached: true,
   });
   let devLog = "";
   dev.stdout.on("data", (chunk) => (devLog += chunk));
   dev.stderr.on("data", (chunk) => (devLog += chunk));
   const cleanup = () => {
-    dev.kill("SIGTERM");
+    try {
+      process.kill(-dev.pid, "SIGKILL");
+    } catch {
+      dev.kill("SIGKILL");
+    }
     void jwks.close();
   };
   try {
@@ -57,9 +62,10 @@ async function main() {
   } catch (error) {
     console.error(devLog.slice(-4000));
     cleanup();
-    throw error;
+    process.exit(1);
   }
   cleanup();
+  process.exit(0);
 }
 
 async function run() {

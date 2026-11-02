@@ -21,7 +21,8 @@ async function main() {
   run("npx", ["wrangler", "d1", "execute", "exe", "--local", "--file", "worker/src/schema.sql"]);
   const dev = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--ip", "127.0.0.1"], {
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+    env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" },
+    detached: true,
   });
   let devLog = "";
   dev.stdout.on("data", (chunk) => (devLog += chunk));
@@ -31,7 +32,11 @@ async function main() {
   let agentLog = "";
   const cleanup = () => {
     agent?.kill("SIGKILL");
-    dev.kill("SIGTERM");
+    try {
+      process.kill(-dev.pid, "SIGKILL");
+    } catch {
+      dev.kill("SIGKILL");
+    }
     void jwks.close();
     rmSync(configDir, { recursive: true, force: true });
   };
@@ -111,9 +116,10 @@ async function main() {
     console.error(agentLog?.slice(-3000));
     console.error(devLog.slice(-2000));
     cleanup();
-    throw error;
+    process.exit(1);
   }
   cleanup();
+  process.exit(0);
 }
 
 await main();
