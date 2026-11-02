@@ -21,11 +21,11 @@ export function failure(error: unknown): Response {
   const message = error instanceof Error ? error.message : "internal error";
   return json({ error: message, code: "internal" }, 500);
 }
-export async function body<T>(request: Request): Promise<T> {
+export async function body<T>(request: Request, maxBytes = 65536): Promise<T> {
   const type = request.headers.get("content-type") ?? "";
   if (!type.includes("application/json")) throw new ApiError(415, "expected application/json");
   const text = await request.text();
-  if (text.length > 65536) throw new ApiError(413, "request body too large");
+  if (text.length > maxBytes) throw new ApiError(413, "request body too large");
   try {
     return JSON.parse(text) as T;
   } catch {

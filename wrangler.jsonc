@@ -18,7 +18,8 @@
   ],
   "vars": {
     "AUTH_ISSUER": "https://auth.ntnl.io",
-    "AUTH_AUDIENCE": "exe.ntnl.io"
+    "AUTH_AUDIENCE": "exe.ntnl.io",
+    "CONSOLE_ORIGINS": "https://exe-console.pages.dev"
   },
   "routes": [{ "pattern": "exe.ntnl.io", "custom_domain": true }],
   "observability": { "enabled": true }
