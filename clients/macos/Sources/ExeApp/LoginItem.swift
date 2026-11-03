@@ -25,7 +25,7 @@ final class LoginItem: ObservableObject {
         case .notRegistered:
             return "未开启：重启后设备会离线，直到你打开 eXe"
         case .notFound:
-            return "系统还没登记这个 App：先把它放进「应用程序」再打开"
+            return "系统还没认到它；把开关打开试一次，仍不行就把 App 移到「应用程序」里"
         @unknown default:
             return "状态未知"
         }
@@ -35,7 +35,38 @@ final class LoginItem: ObservableObject {
         status = SMAppService.mainApp.status
     }
 
+    /// First launch: register ourselves, once, unless the user has ever turned
+    /// the switch off. The launchd service this replaced was always up, so a
+    /// host that stays offline until somebody opens the window would be a
+    /// downgrade — but re-registering after a deliberate "off" would be worse,
+    /// which is what `decided` is for.
+    func adoptOnFirstLaunch() {
+        guard !UserDefaults.standard.bool(forKey: Self.decidedKey) else { return }
+        UserDefaults.standard.set(true, forKey: Self.decidedKey)
+        registerIfNeeded(reason: "first launch")
+    }
+
+    /// Everything here can fail silently (`SMAppService` throws, the login item
+    /// can end up needing approval), so every attempt lands in the app log with
+    /// the status it produced.
+    /// Note that `status` is not a reliable gate here: an ad-hoc bundle that has
+    /// never been registered reports `.notFound` (3) rather than `.notRegistered`,
+    /// and registering still works. So: just try, and record what came back.
+    private func registerIfNeeded(reason: String) {
+        do {
+            try SMAppService.mainApp.register()
+            refresh()
+            AppLog.write("login item: \(reason) registered, status=\(status.rawValue)")
+        } catch {
+            refresh()
+            AppLog.write("login item: \(reason) register failed: \(error) (status=\(status.rawValue))")
+        }
+    }
+
+    private static let decidedKey = "loginItemDecided"
+
     func set(_ enabled: Bool) {
+        UserDefaults.standard.set(true, forKey: Self.decidedKey)
         do {
             if enabled {
                 try SMAppService.mainApp.register()
@@ -43,10 +74,13 @@ final class LoginItem: ObservableObject {
                 try SMAppService.mainApp.unregister()
             }
             message = enabled ? "已加入登录项" : "已从登录项移除"
+            AppLog.write("login item: switch → \(enabled)")
         } catch {
             message = "改不了登录项：\(error.localizedDescription)"
+            AppLog.write("login item: switch → \(enabled) failed: \(error)")
         }
         refresh()
+        AppLog.write("login item: status=\(status.rawValue)")
     }
 
     func openSettings() {

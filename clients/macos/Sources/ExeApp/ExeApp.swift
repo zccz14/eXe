@@ -24,7 +24,7 @@ struct ExeApp: App {
                 .environmentObject(store)
                 .environmentObject(login)
                 .frame(minWidth: 760, minHeight: 520)
-                .task { store.reload(); login.refresh(); supervisor.start() }
+                .task { store.reload(); login.adoptOnFirstLaunch(); supervisor.start() }
         }
 
         MenuBarExtra {

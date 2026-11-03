@@ -104,19 +104,10 @@ final class DeviceSupervisor: ObservableObject {
     private func append(_ text: String) {
         DispatchQueue.main.async { [self] in
             let stamp = ISO8601DateFormatter().string(from: Date())
-            let incoming = text.split(separator: "\n").map { "\(stamp) \($0)" }
-            lines.append(contentsOf: incoming)
+            lines.append(contentsOf: text.split(separator: "\n").map { "\(stamp) \($0)" })
             if text.contains("already owns this address") { needsHandover = true }
             if lines.count > 500 { lines.removeFirst(lines.count - 500) }
-        if !FileManager.default.fileExists(atPath: Paths.appLog.path) {
-            FileManager.default.createFile(atPath: Paths.appLog.path, contents: nil)
-        }
-            if let data = (incoming.joined(separator: "\n") + "\n").data(using: .utf8),
-               let handle = try? FileHandle(forWritingTo: Paths.appLog) {
-                handle.seekToEndOfFile()
-                handle.write(data)
-                try? handle.close()
-            }
+            AppLog.write(text)
         }
     }
 }
