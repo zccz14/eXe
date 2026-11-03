@@ -39,6 +39,24 @@ enum Paths {
     }
 }
 
+/// The app log is where a host explains itself: the window may never be opened,
+/// but `~/Library/Logs/eXe/app.log` is always there to answer "why is the device
+/// not up?".
+enum AppLog {
+    static func write(_ text: String) {
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map { "\(stamp) \($0)" }
+        if !FileManager.default.fileExists(atPath: Paths.appLog.path) {
+            FileManager.default.createFile(atPath: Paths.appLog.path, contents: nil)
+        }
+        guard let data = (lines.joined(separator: "\n") + "\n").data(using: .utf8),
+              let handle = try? FileHandle(forWritingTo: Paths.appLog) else { return }
+        handle.seekToEndOfFile()
+        handle.write(data)
+        try? handle.close()
+    }
+}
+
 /// base58(pub32) is the address. Deriving it here means the window can show a
 /// caller's address without asking the CLI, and the two agree or something is
 /// wrong.
