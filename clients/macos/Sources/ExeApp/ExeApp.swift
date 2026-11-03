@@ -15,14 +15,16 @@ struct ExeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var supervisor = DeviceSupervisor.shared
     @StateObject private var store = ConfigStore()
+    @StateObject private var login = LoginItem()
 
     var body: some Scene {
         WindowGroup("eXe") {
             RootView()
                 .environmentObject(supervisor)
                 .environmentObject(store)
+                .environmentObject(login)
                 .frame(minWidth: 760, minHeight: 520)
-                .task { store.reload(); supervisor.start() }
+                .task { store.reload(); login.refresh(); supervisor.start() }
         }
 
         MenuBarExtra {

@@ -62,10 +62,13 @@ final class ConfigStore: ObservableObject {
         run(["untrust", address], done: "已撤销 \(short(address))")
     }
 
-    /// Switching from launchd to the app: the address can only be held by one
-    /// process, so the service has to let go before the app takes it.
-    func stopSystemService() {
-        run(["stop"], done: "已停用系统服务；地址现在归 App 托管")
+    /// Switching from launchd to the app. `exe stop` would only last until the
+    /// next login: the LaunchAgent stays installed and its plist says RunAtLoad,
+    /// so launchd would take the address back and the app would be the one that
+    /// cannot start. Handing over therefore *uninstalls* the service — without
+    /// `--purge`, so the device key and the trust list stay where they are.
+    func removeSystemService() {
+        run(["uninstall"], done: "已移除 CLI 系统服务（钥匙与 trust 保留）；设备现在由 App 托管")
     }
 
     // MARK: - caller device list
