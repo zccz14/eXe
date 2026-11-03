@@ -35,23 +35,31 @@ final class LoginItem: ObservableObject {
         status = SMAppService.mainApp.status
     }
 
-    /// First launch: register ourselves, once, unless the user has ever turned
-    /// the switch off. The launchd service this replaced was always up, so a
-    /// host that stays offline until somebody opens the window would be a
-    /// downgrade — but re-registering after a deliberate "off" would be worse,
-    /// which is what `decided` is for.
-    func adoptOnFirstLaunch() {
-        guard !UserDefaults.standard.bool(forKey: Self.decidedKey) else { return }
-        UserDefaults.standard.set(true, forKey: Self.decidedKey)
-        registerIfNeeded(reason: "first launch")
+    /// Every launch, not just the first: a rebuilt bundle has a new ad-hoc
+    /// signature, and the system may quietly drop the registration when it
+    /// changes. The launchd service this replaced was always up, so staying
+    /// offline until somebody opens the window would be a downgrade.
+    ///
+    /// The one thing that wins over this is the user: turning the switch off
+    /// records `loginItemDisabled` and it stays off until they turn it back on.
+    func reconcile() {
+        guard !UserDefaults.standard.bool(forKey: Self.disabledKey) else {
+            AppLog.write("login item: switch is off, leaving it alone")
+            return
+        }
+        guard status != .enabled else {
+            AppLog.write("login item: already enabled")
+            return
+        }
+        registerIfNeeded(reason: "launch")
     }
 
     /// Everything here can fail silently (`SMAppService` throws, the login item
     /// can end up needing approval), so every attempt lands in the app log with
     /// the status it produced.
-    /// Note that `status` is not a reliable gate here: an ad-hoc bundle that has
-    /// never been registered reports `.notFound` (3) rather than `.notRegistered`,
-    /// and registering still works. So: just try, and record what came back.
+    /// `status` is not a gate: an ad-hoc bundle that has never been registered
+    /// reports `.notFound` (3) rather than `.notRegistered`, and registering
+    /// still works. So: just try, and record what came back.
     private func registerIfNeeded(reason: String) {
         do {
             try SMAppService.mainApp.register()
@@ -63,10 +71,10 @@ final class LoginItem: ObservableObject {
         }
     }
 
-    private static let decidedKey = "loginItemDecided"
+    private static let disabledKey = "loginItemDisabled"
 
     func set(_ enabled: Bool) {
-        UserDefaults.standard.set(true, forKey: Self.decidedKey)
+        UserDefaults.standard.set(!enabled, forKey: Self.disabledKey)
         do {
             if enabled {
                 try SMAppService.mainApp.register()
