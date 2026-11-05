@@ -7,3 +7,6 @@ dist/
 target/
 .DS_Store
 .build/
+
+# The dsh plugin ships a built bundle to npm, never to git
+plugins/dsh/lib/

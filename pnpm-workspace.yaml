@@ -1,6 +1,7 @@
 packages:
   - "."
   - "console"
+  - "plugins/dsh"
 
 # Postinstall scripts are opt-in: only the toolchain that ships a native binary.
 allowBuilds:

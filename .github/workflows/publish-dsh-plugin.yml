@@ -1,0 +1,56 @@
+name: publish-dsh-plugin
+
+# The dsh plugin ships on its own version line, so it gets its own tag prefix:
+# `dsh-v*` publishes dsh-plugin-exe, `v*` publishes the eXe binary (release.yml).
+on:
+  push:
+    tags: ["dsh-v*"]
+  workflow_dispatch:
+
+# Trusted publishing: the registry verifies this workflow run itself. No npm
+# token is stored in the repository, and nothing here can publish from a fork.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: publish dsh-plugin-exe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm >= 11.5.1; the runner's bundled npm is older.
+      - name: Use the current npm
+        run: npm install -g npm@latest
+      - run: pnpm install --frozen-lockfile
+
+      - name: The tag names the version being published
+        run: |
+          version=$(node -p "require('./plugins/dsh/package.json').version")
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "dsh-v$version" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match plugins/dsh v$version"
+            echo "bump plugins/dsh/package.json, then tag dsh-v<version>"
+            exit 1
+          fi
+          echo "publishing dsh-plugin-exe v$version"
+
+      - name: Typecheck, test, and build the bundle
+        run: pnpm --dir plugins/dsh check
+
+      - name: The tarball carries the bundle, the patch layer and the README
+        working-directory: plugins/dsh
+        run: |
+          npm pack --dry-run 2>&1 | tee /tmp/pack.txt
+          for file in README.md cordis.patch.yml lib/index.js package.json; do
+            grep -q " ${file}" /tmp/pack.txt || { echo "::error::${file} is missing from the tarball"; exit 1; }
+          done
+
+      - name: Publish
+        working-directory: plugins/dsh
+        run: npm publish --access public --provenance

@@ -24,6 +24,8 @@ jobs:
         run: pnpm typecheck
       - name: Every component shares one version
         run: pnpm version:check
+      - name: dsh plugin (typecheck, protocol tests, bundle)
+        run: pnpm --dir plugins/dsh check
       - name: Protocol tests
         run: pnpm test
       - name: Build console
