@@ -1,6 +1,6 @@
 # eXe · Soul
 
-> eXe (Executable) 是 △○✕□ 里的 ✕：可变数的那一个。CTX 改名 Docs 之后，X 让给了执行面。
+> eXe (Executable) 是**执行面**：harness 决定做什么，它负责在这台设备上做了，并把证据带回来。
 
 ## 它是什么
 
