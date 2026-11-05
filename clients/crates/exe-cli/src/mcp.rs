@@ -507,28 +507,40 @@ async fn call_tool(caller: &Caller, name: &str, args: &Value, cancel: Arc<Atomic
     failed(format!("exe: unknown tool `{name}`"))
 }
 
-fn shell_result(device: &str, command: &str, outcome: Outcome) -> Value {
-    let ok = outcome.body["ok"].as_bool().unwrap_or(false);
-    let output = &outcome.body["output"];
-    let code = output["exit_code"].as_i64().unwrap_or(-1);
-    let mut stdout = output["stdout"].as_str().unwrap_or_default().to_owned();
-    let stderr = output["stderr"].as_str().unwrap_or_default().to_owned();
-    let mut truncated = output["truncated"].as_bool().unwrap_or(false);
-    if let Some(bytes) = &outcome.attachment {
-        if let Ok(full) = std::str::from_utf8(bytes) {
-            stdout = full.to_owned();
-            truncated = false;
-        }
+/// The device's answer, whole.
+///
+/// A result too big for one row travels as an attachment — and the attachment is
+/// the device's entire answer, the same JSON document `exec` produced, sealed.
+/// It is not a stream of stdout: the JSON that wraps the stream comes with it.
+/// Treating it as the stream is how a picture became an invalid base64 string
+/// the moment it grew past the inline budget.
+fn whole(outcome: Outcome) -> Value {
+    match outcome.attachment {
+        Some(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+            Ok(value @ Value::Object(_)) => value,
+            _ => outcome.body,
+        },
+        None => outcome.body,
     }
+}
+
+fn shell_result(device: &str, command: &str, outcome: Outcome) -> Value {
+    let body = whole(outcome);
+    let ok = body["ok"].as_bool().unwrap_or(false);
+    let output = &body["output"];
+    let code = output["exit_code"].as_i64().unwrap_or(-1);
+    let stdout = output["stdout"].as_str().unwrap_or_default();
+    let stderr = output["stderr"].as_str().unwrap_or_default();
+    let truncated = output["truncated"].as_bool().unwrap_or(false);
     let mut text = format!("[{device}] $ {command}\nexit {code}\n{stdout}");
     if !stderr.is_empty() {
         text.push_str("\n--- stderr ---\n");
-        text.push_str(&stderr);
+        text.push_str(stderr);
     }
     if truncated {
         text.push_str("\n[output truncated by the device]");
     }
-    if outcome.body["code"].as_str() == Some("timeout") {
+    if body["code"].as_str() == Some("timeout") {
         text.push_str("\n[the device killed the command at its timeout]");
     }
     json!({
@@ -546,16 +558,26 @@ fn shell_result(device: &str, command: &str, outcome: Outcome) -> Value {
 }
 
 fn image_result(device: &str, path: &str, outcome: Outcome) -> Value {
-    let mut base64 = outcome.body["output"]["stdout"]
+    let body = whole(outcome);
+    let output = &body["output"];
+    let base64: String = output["stdout"]
         .as_str()
         .unwrap_or_default()
-        .to_owned();
-    if let Some(bytes) = &outcome.attachment {
-        if let Ok(full) = std::str::from_utf8(bytes) {
-            base64 = full.to_owned();
-        }
+        .split_whitespace()
+        .collect();
+    // The row carries a preview when the answer was too big to sit in it. A
+    // preview of base64 is still base64 — short, and pretending to be a
+    // picture. Say what happened instead of handing over the first 32 KiB.
+    if output["truncated"].as_bool().unwrap_or(false) {
+        let reason = body["blob"]["error"]
+            .as_str()
+            .map(|error| format!(" ({error})"))
+            .unwrap_or_default();
+        return failed(format!(
+            "exe: {path} did not arrive whole — the device had to cut the answer to a \
+             preview{reason}. Downscale it on the device first."
+        ));
     }
-    let base64: String = base64.split_whitespace().collect();
     if base64.is_empty() {
         return failed(format!(
             "exe: {device} returned nothing for {path} (not a file, or base64 is missing there)"
@@ -755,6 +777,97 @@ mod tests {
     fn the_prefix_is_configurable_because_two_pools_may_coexist() {
         let tools = tool_list("work", &BTreeMap::new());
         assert_eq!(tools[1]["name"], "work_bash");
+    }
+
+    /// A result past the inline budget, as the relay delivers it: the row is a
+    /// preview with a pointer, the attachment is the device's whole answer.
+    fn attached(answer: Value) -> Outcome {
+        let stdout = answer["output"]["stdout"].as_str().unwrap_or_default();
+        let full = answer.to_string();
+        Outcome {
+            body: json!({
+                "ok": answer["ok"],
+                "output": {
+                    "tool": "shell",
+                    "exit_code": 0,
+                    "stdout": stdout.chars().take(64).collect::<String>(),
+                    "stderr": "",
+                    "truncated": true,
+                    "stdout_bytes": stdout.len(),
+                },
+                "blob": { "bytes": full.len() },
+            }),
+            attachment: Some(full.into_bytes()),
+        }
+    }
+
+    fn answer(stdout: &str) -> Value {
+        json!({ "ok": true, "output": { "tool": "shell", "exit_code": 0, "stdout": stdout, "stderr": "" } })
+    }
+
+    /// The bug this test exists for: past 64 KiB inline, the picture came back
+    /// as the JSON document that wrapped it, and the harness said "Invalid
+    /// Base64 string". A big picture must arrive as the same bytes a small one
+    /// does.
+    #[test]
+    fn a_big_picture_arrives_whole_rather_than_as_the_json_around_it() {
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let result = image_result("box", "/tmp/dot.png", attached(answer(png)));
+        assert_eq!(result["isError"], Value::Null);
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["data"], png);
+        assert_eq!(result["content"][0]["mimeType"], "image/png");
+        assert_eq!(result["structuredContent"]["bytes_base64"], png.len());
+    }
+
+    /// The other half: when the attachment never arrived, the row's preview is
+    /// a truncated picture. Naming that beats shipping 32 KiB of base64 that
+    /// decodes to nonsense.
+    #[test]
+    fn a_picture_that_could_not_be_attached_is_named_as_such() {
+        let outcome = Outcome {
+            body: json!({
+                "ok": true,
+                "output": {
+                    "tool": "shell",
+                    "exit_code": 0,
+                    "stdout": "iVBORw0KGgo",
+                    "stderr": "",
+                    "truncated": true,
+                    "stdout_bytes": 10_000_000,
+                },
+                "blob": { "error": "an attachment may not exceed 16777216 bytes" },
+            }),
+            attachment: None,
+        };
+        let result = image_result("box", "/tmp/big.png", outcome);
+        assert_eq!(result["isError"], true);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("did not arrive whole"), "{text}");
+        assert!(text.contains("16777216"), "{text}");
+    }
+
+    /// `exe_bash` had the same mistake: a large answer's text was the answer's
+    /// JSON, not the answer.
+    #[test]
+    fn a_big_bash_answer_keeps_its_own_text() {
+        let result = shell_result("box", "printf hello", attached(answer("hello")));
+        assert_eq!(result["structuredContent"]["stdout"], "hello");
+        assert_eq!(result["structuredContent"]["truncated"], false);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text, "[box] $ printf hello\nexit 0\nhello");
+    }
+
+    /// A small answer never had an attachment, and still does not need one.
+    #[test]
+    fn a_small_answer_is_read_from_the_row() {
+        let outcome = Outcome {
+            body: answer("hi"),
+            attachment: None,
+        };
+        let result = shell_result("box", "printf hi", outcome);
+        assert_eq!(result["structuredContent"]["stdout"], "hi");
+        assert_eq!(result["structuredContent"]["truncated"], false);
     }
 
     #[test]
