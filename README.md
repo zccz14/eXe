@@ -7,6 +7,34 @@
 > **术语**：**调用方**是产生调用的一方。**控制台**只是它的一个实现——`exe.ntnl.io` 上那个
 > 浏览器应用；另一台跑 `exe mcp` 的机器、一个自研 agent，都是同等资格的调用方。
 
+## 拓扑
+
+调用方与设备之间**没有网络边**：两边都只连中继，方向永远由调用方发起，设备也没有「回调调用方」这条路。
+把两者绑在一起的不是网络，而是设备 `trust` 里的那一行地址——由人写上去，中继那份副本只能让投递变少。
+
+```mermaid
+flowchart LR
+  C["调用方 caller<br/>私钥在端侧，签出调用<br/>—<br/>控制台 exe.ntnl.io<br/>exe mcp（agent 主机）<br/>自研 agent<br/>托管调用方"]
+  R["中继 relay<br/>Cloudflare Workers<br/>exe.ntnl.io · exe.ntnl.top<br/>—<br/>D1 队列与状态 · R2 附件<br/>只存信封，读不懂内容"]
+  D["设备 device<br/>私钥在设备，执行调用<br/>—<br/>macOS · Linux · Windows<br/>Android · iOS"]
+  C -->|"(1) 投递调用信封（自签）"| R
+  R -->|"(2) SSE 下发（1 秒取件）"| D
+  D -.->|"(3) 回执 / 密封结果"| R
+  R -.->|"(4) 取回信封，解封后 ack"| C
+  C -.->|"(5) trust 授权：人写地址<br/>不是网络边，不经云端"| D
+```
+
+| # | 方向 | 传输 | 走什么 | 谁验谁 |
+|---|---|---|---|---|
+| (1) | 调用方 → 中继 | HTTPS，每次请求自签 | `POST /api/devices/{address}/calls` 投递调用信封 | 中继验签 + 时间窗 ±300 s |
+| (2) | 中继 → 设备 | SSE 长连接，1 秒在 D1 里取一次件 | `GET /v1/devices/{address}/stream` 下发同一封信封 | 设备验签：`caller` 必须在 `trust` 里 |
+| (3) | 设备 → 中继 | HTTPS，自签 | `received` 回执、密封 `result`，装不进一行时先传 `blob` | 中继只核 `call_id` 幂等，不解密 |
+| (4) | 中继 → 调用方 | HTTPS，自签 | 状态与信封；调用方本地解封后 `ack`，中继立刻删掉这一行 | 调用方自己解封验签 |
+| (5) | 调用方 ⇢ 设备 | **没有这条边** | 只有人写下的那两处地址 | 设备的 `trust` 是唯一权威 |
+
+于是「调用者 / 被调用者」只有一层含义：**调用方是签得出这台设备接受的签名的地址，设备是执行并
+签回结果的地址**。中继两侧看到的都只是地址、密文和签名——它不知道谁是谁，也不该知道。
+
 - 设计约束：[`docs/SOUL.md`](docs/SOUL.md)
 - 线协议：[`docs/PROTOCOL.md`](docs/PROTOCOL.md)
 - 威胁模型与托管等级：[`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md)
@@ -44,7 +72,7 @@ exe logs -f               # 服务没有终端，失败只能在这里看见
 ## 用一个 MCP 连接操作所有设备
 
 任何支持 MCP 的 harness（Claude Code、Codex、Cursor、自研 agent）都能用同一套工具，
-不需要 Cybion，也不需要账号——调用方的身份就是它的私钥：
+不需要任何平台账号——调用方的身份就是它的私钥：
 
 ```sh
 # 在跑 agent 的那台机器上
