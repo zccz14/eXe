@@ -14,5 +14,6 @@
     "resolveJsonModule": true,
     "isolatedModules": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "../../shared/protocol.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "../../shared/protocol.ts"],
+  "exclude": ["src/client/**/*", "tests/client*.ts", "tests/client*.tsx"]
 }

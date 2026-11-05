@@ -43,11 +43,11 @@ jobs:
       - name: Typecheck, test, and build the bundle
         run: pnpm --dir plugins/dsh check
 
-      - name: The tarball carries the bundle, the patch layer and the README
+      - name: The tarball carries both halves, the patch layer and the README
         working-directory: plugins/dsh
         run: |
           npm pack --dry-run 2>&1 | tee /tmp/pack.txt
-          for file in README.md cordis.patch.yml lib/index.js package.json; do
+          for file in README.md cordis.patch.yml lib/index.js lib/client.js package.json; do
             grep -q " ${file}" /tmp/pack.txt || { echo "::error::${file} is missing from the tarball"; exit 1; }
           done
 

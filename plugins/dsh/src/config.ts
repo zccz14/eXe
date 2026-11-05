@@ -42,13 +42,23 @@ interface CallerFile {
   devices?: unknown;
 }
 
-/** `~/.config/exe/mcp.toml`, the same path `exe mcp` reads and writes. */
-export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+/** The eXe configuration directory: the one place the CLI and this plugin agree on. */
+export function configDir(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.EXE_CONFIG_DIR?.trim();
-  if (override) return join(override, "mcp.toml");
-  if (process.platform === "win32" && env.APPDATA?.trim()) return join(env.APPDATA.trim(), "exe", "mcp.toml");
+  if (override) return override;
+  if (process.platform === "win32" && env.APPDATA?.trim()) return join(env.APPDATA.trim(), "exe");
   const home = env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
-  return join(home, ".config", "exe", "mcp.toml");
+  return join(home, ".config", "exe");
+}
+
+/** `~/.config/exe/mcp.toml`: the caller half, written by `exe mcp`. */
+export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(configDir(env), "mcp.toml");
+}
+
+/** `~/.config/exe/config.toml`: the device half, written by `exe`. */
+export function deviceConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(configDir(env), "config.toml");
 }
 
 /** One base URL per entry, trimmed: a trailing slash would double up in a join. */
