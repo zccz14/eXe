@@ -100,6 +100,20 @@ phone   = "<设备地址>"
 工具名带前缀是刻意的：harness 把所有 server 的工具拍平成一张表，而每个 agent 本来就有
 自己的 `bash`；裸名会被内建工具或先到的 server 遮蔽。
 
+## 在 DeepSeek Harness 里用
+
+eXe 的执行面不只给 MCP：DeepSeek Harness（dsh）用户可以直接装一个插件，三个工具
+（`exe_devices` / `exe_bash` / `exe_image`）就跑在 harness 进程里——不用 Rust 二进制、
+不绕 MCP，截图作为图片交给模型：
+
+```sh
+dsh plugin --profile web add dsh-plugin-exe
+```
+
+它读的是这台机器上 `exe mcp` 已经在用的那把调用方钥匙（`~/.config/exe/mcp.toml`），
+所以设备上已经信任过的地址不用改。源码与配置说明见
+[`plugins/dsh/README.md`](plugins/dsh/README.md)，发布走 `dsh-v*` 标签（npm trusted publishing）。
+
 ## 发布
 
 客户端二进制在 GitHub Releases 上，控制台的「下载客户端」指向最新一版；安装脚本随发布一起

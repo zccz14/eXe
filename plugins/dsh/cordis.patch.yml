@@ -1,0 +1,15 @@
+# The layer this bundle adds to a dsh profile: one row, three tools.
+#
+# Everything the row may need is a schema default, so an installed bundle works
+# with no configuration at all — it reads the caller key `exe mcp` already keeps
+# on this machine. Users override any field here, in their profile's own
+# cordis.patch.yml, without touching this package:
+#
+#   - id: dsh-plugin-exe
+#     config:
+#       toolPrefix: box
+#       devices:
+#         macmini: <device address>
+- insert:
+    - id: dsh-plugin-exe
+      name: dsh-plugin-exe
