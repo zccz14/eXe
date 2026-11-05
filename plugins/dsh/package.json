@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-exe",
-  "version": "0.2.0",
-  "description": "eXe for DeepSeek Harness: shell and screenshots on your own devices, plus a sidebar page that carries the caller key other devices must trust",
+  "version": "0.2.1",
+  "description": "eXe for DeepSeek Harness: shell and screenshots on your own devices, plus a sidebar page for the caller key, editable labels and one-tap reachability tests",
   "keywords": [
     "dsh",
     "dsh-plugin",

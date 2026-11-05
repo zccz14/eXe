@@ -21,8 +21,10 @@ import type {} from "@deepseek-ai/dsh-attachment";
 import type { ImageAttachmentRef, ImageMediaType } from "@deepseek-ai/dsh-attachment";
 import { DEFAULT_ENDPOINTS, addressForDevice, resolveCaller, type Caller } from "./config.ts";
 import { Relay } from "./relay.ts";
+import { pingDevices } from "./ping.ts";
 import { registerExeRoutes, type WebServerLike } from "./routes.ts";
 import { createStateStore } from "./state.ts";
+import type { PingResult } from "./contract.ts";
 import { imageBase64, renderDevices, renderShell, shellAnswer, type DeviceRow } from "./answers.ts";
 
 export const name = "dsh-plugin-exe";
@@ -351,6 +353,17 @@ export function apply(ctx: Context, config: Config): void {
   ctx.inject(["webServer"], (scoped) => {
     const webServer = (scoped as unknown as { webServer: WebServerLike }).webServer;
     const store = createStateStore(config);
-    scoped.effect(() => registerExeRoutes(webServer, store), "dsh-plugin-exe: panel routes");
+    // The ping is a real call: one `echo`, measured end to end. The relay's own
+    // opinion is probed first, so an offline device fails in milliseconds instead
+    // of waiting out the whole budget.
+    const ping = async (labels?: string[]): Promise<PingResult[]> => {
+      const caller = callerOf();
+      const targets =
+        labels === undefined
+          ? [...caller.devices].map(([label, address]) => ({ label, address }))
+          : labels.map((label) => ({ label, address: addressForDevice(caller, label) }));
+      return await pingDevices(relayOf(), targets);
+    };
+    scoped.effect(() => registerExeRoutes(webServer, { store, ping }), "dsh-plugin-exe: panel routes");
   });
 }

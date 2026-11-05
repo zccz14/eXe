@@ -31,6 +31,8 @@ export interface SimulatorOptions {
   tamper?: boolean;
   /** Never settle: the call stays queued, as if the device vanished mid-flight. */
   hang?: boolean;
+  /** Report the device as offline at the relay, without answering anything. */
+  online?: boolean;
 }
 
 interface CallEntry {
@@ -85,7 +87,14 @@ export function simulateDevice(options: SimulatorOptions = {}): Simulator {
     const now = Math.floor(Date.now() / 1000);
     const device = /^\/api\/devices\/([^/]+)$/.exec(path);
     if (device !== null) {
-      return json({ address: device[1], registered: true, online: true, platform: "darwin", version: "test", last_seen_at: now });
+      return json({
+        address: device[1],
+        registered: true,
+        online: options.online !== false,
+        platform: "darwin",
+        version: "test",
+        last_seen_at: now,
+      });
     }
 
     const deliver = /^\/api\/devices\/([^/]+)\/calls$/.exec(path);

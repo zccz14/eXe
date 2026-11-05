@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { addressOf, encodeSecret, newIdentity } from "../../../shared/protocol.ts";
 import { registerExeRoutes, type WebRoute, type WebServerLike } from "../src/routes.ts";
+import type { PingResult } from "../src/contract.ts";
 import { createStateStore } from "../src/state.ts";
 
 const caller = newIdentity();
@@ -15,6 +16,7 @@ const device = newIdentity();
 interface Served {
   base: string;
   server: Server;
+  pinged: Array<string[] | undefined>;
 }
 
 async function serve(options: { caller?: boolean } = {}): Promise<Served> {
@@ -36,7 +38,13 @@ async function serve(options: { caller?: boolean } = {}): Promise<Served> {
       };
     },
   };
-  const dispose = registerExeRoutes(webServer, store);
+  const pinged: Array<string[] | undefined> = [];
+  const ping = async (labels?: string[]): Promise<PingResult[]> => {
+    pinged.push(labels);
+    const targets = labels ?? ["lab"];
+    return targets.map((label) => ({ label, address: addressOf(device), ok: true, rttMs: 12 }));
+  };
+  const dispose = registerExeRoutes(webServer, { store, ping });
   assert.ok(route !== undefined, "the routes were not registered");
   const registered = route;
   const server = createServer((req, res) => {
@@ -50,7 +58,7 @@ async function serve(options: { caller?: boolean } = {}): Promise<Served> {
     server.close();
   };
   test.after?.(close);
-  return { base: `http://127.0.0.1:${port}`, server };
+  return { base: `http://127.0.0.1:${port}`, server, pinged };
 }
 
 test("the page reads one state document over GET", async (t) => {
@@ -113,6 +121,42 @@ test("a write from another origin is refused, and a non-JSON body with it", asyn
     body: JSON.stringify({ op: "trust.add", address: addressOf(newIdentity()) }),
   });
   assert.equal(plain.status, 415);
+});
+
+test("a ping measures every device, or the ones it names", async (t) => {
+  const served = await serve();
+  t.after(() => served.server.close());
+
+  const all = await fetch(`${served.base}/exe/api/ping`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert.equal(all.status, 200);
+  const everything = (await all.json()) as { results: PingResult[] };
+  assert.equal(everything.results.length, 1);
+  assert.equal(everything.results[0]?.ok, true);
+  assert.equal(everything.results[0]?.rttMs, 12);
+
+  const one = await fetch(`${served.base}/exe/api/ping`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ labels: ["lab"] }),
+  });
+  assert.equal(one.status, 200);
+  assert.deepEqual(served.pinged, [undefined, ["lab"]]);
+});
+
+test("a ping with labels that are not labels is refused", async (t) => {
+  const served = await serve();
+  t.after(() => served.server.close());
+  const response = await fetch(`${served.base}/exe/api/ping`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ labels: [42] }),
+  });
+  assert.equal(response.status, 400);
+  assert.equal(served.pinged.length, 0);
 });
 
 test("the method and the path are part of the contract", async (t) => {

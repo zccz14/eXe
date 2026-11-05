@@ -4,7 +4,7 @@
 // they touch are the user's own eXe configuration, so the route is deliberately
 // narrow — same-origin only, JSON only, one bounded body, no free-form paths.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { EditOp } from "./contract.ts";
+import type { EditOp, PingResult } from "./contract.ts";
 import type { ExeStateStore } from "./state.ts";
 
 /** The shape `ctx.webServer.register` accepts. Structural, so no host package is imported. */
@@ -69,8 +69,15 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   }
 }
 
-/** Register the panel's two routes and return the disposer that removes them. */
-export function registerExeRoutes(webServer: WebServerLike, store: ExeStateStore): () => void {
+/** What the routes need from the plugin: the two files, and a way to reach a device. */
+export interface ExeRoutesDeps {
+  store: ExeStateStore;
+  /** Ping the named devices, or every configured one when `labels` is omitted. */
+  ping(labels?: string[]): Promise<PingResult[]>;
+}
+
+/** Register the panel's routes and return the disposer that removes them. */
+export function registerExeRoutes(webServer: WebServerLike, deps: ExeRoutesDeps): () => void {
   const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (!sameOrigin(req)) {
@@ -83,7 +90,7 @@ export function registerExeRoutes(webServer: WebServerLike, store: ExeStateStore
           send(res, 405, { error: "use GET" });
           return;
         }
-        send(res, 200, store.state());
+        send(res, 200, deps.store.state());
         return;
       }
       if (url.pathname === `${ROUTE_PREFIX}/edit`) {
@@ -100,7 +107,25 @@ export function registerExeRoutes(webServer: WebServerLike, store: ExeStateStore
           send(res, 400, { error: "an edit names its `op`" });
           return;
         }
-        send(res, 200, store.edit(body as EditOp));
+        send(res, 200, deps.store.edit(body as EditOp));
+        return;
+      }
+      if (url.pathname === `${ROUTE_PREFIX}/ping`) {
+        if (req.method !== "POST") {
+          send(res, 405, { error: "use POST" });
+          return;
+        }
+        if (!(req.headers["content-type"] ?? "").includes("application/json")) {
+          send(res, 415, { error: "send application/json" });
+          return;
+        }
+        const body = (await readJson(req)) as { labels?: unknown };
+        const labels = body.labels;
+        if (labels !== undefined && (!Array.isArray(labels) || labels.some((label) => typeof label !== "string"))) {
+          send(res, 400, { error: "`labels` is a list of device labels" });
+          return;
+        }
+        send(res, 200, { results: await deps.ping(labels as string[] | undefined) });
         return;
       }
       send(res, 404, { error: `no route for ${req.method} ${url.pathname}` });

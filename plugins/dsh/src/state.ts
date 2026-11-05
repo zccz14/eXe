@@ -6,10 +6,11 @@
 // status`, `exe trust`, and this panel always agree; an edit is a small TOML
 // rewrite with the previous file kept beside it as `<name>.bak`.
 import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { addressOf, decodeSecret, isAddress } from "../../../shared/protocol.ts";
-import { deviceConfigPath, defaultConfigPath, splitEndpoints, type CallerOptions } from "./config.ts";
-import type { CallerView, DeviceRow, DeviceSideView, EditOp, ExeState } from "./contract.ts";
+import { configDir, deviceConfigPath, defaultConfigPath, splitEndpoints, type CallerOptions } from "./config.ts";
+import type { CallerView, DeviceRow, DeviceSideView, EditOp, ExeState, TrustRow } from "./contract.ts";
 
 type Toml = Record<string, unknown>;
 
@@ -45,6 +46,35 @@ function writeToml(path: string, value: Toml): void {
   renameSync(temporary, path);
 }
 
+/**
+ * Labels for trusted callers live beside the config, not inside it: `exe` owns
+ * that file and rewrites it from its own schema, which would drop a key it does
+ * not know. A missing or broken sidecar just means "no labels yet".
+ */
+const LABELS_FILE = "dsh-labels.json";
+
+function readTrustLabels(path: string): Record<string, string> {
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { trust?: unknown };
+    const table = parsed.trust;
+    if (typeof table !== "object" || table === null || Array.isArray(table)) return {};
+    return Object.fromEntries(
+      Object.entries(table as Record<string, unknown>).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim().length > 0,
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function writeTrustLabels(path: string, labels: Record<string, string>): void {
+  const temporary = `${path}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify({ trust: labels }, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporary, path);
+}
+
 function labelOf(value: unknown): string {
   const label = typeof value === "string" ? value.trim() : "";
   if (label.length === 0 || label.length > 64 || /[\u0000-\u001f]/.test(label)) {
@@ -71,6 +101,7 @@ function trustOf(file: Toml | undefined): string[] {
 export function createStateStore(options: CallerOptions = {}, env: NodeJS.ProcessEnv = process.env): ExeStateStore {
   const callerPath = options.configPath?.trim() || defaultConfigPath(env);
   const devicePath = deviceConfigPath(env);
+  const labelsPath = join(configDir(env), LABELS_FILE);
   const inline = options.devices ?? {};
 
   const callerView = (): CallerView => {
@@ -128,7 +159,11 @@ export function createStateStore(options: CallerOptions = {}, env: NodeJS.Proces
       view.endpoints = splitEndpoints(file?.endpoints).length > 0
         ? splitEndpoints(file?.endpoints)
         : splitEndpoints(file?.cloud);
-      view.trust = trustOf(file);
+      const labels = readTrustLabels(labelsPath);
+      view.trust = trustOf(file).map((address): TrustRow => {
+        const label = labels[address];
+        return label === undefined ? { address } : { address, label };
+      });
     } catch (error) {
       view.error = reason(error);
     }
@@ -150,6 +185,25 @@ export function createStateStore(options: CallerOptions = {}, env: NodeJS.Proces
         const devices: Toml = typeof table === "object" && table !== null && !Array.isArray(table) ? { ...(table as Toml) } : {};
         devices[label] = address;
         writeToml(callerPath, { ...file, devices });
+        break;
+      }
+      case "device.rename": {
+        const from = labelOf(op.from);
+        const to = labelOf(op.to);
+        if (from === to) break;
+        if (Object.hasOwn(inline, from) || Object.hasOwn(inline, to)) {
+          throw new Error(`\`${from}\` / \`${to}\` is set in this plugin's own config; change it there, not in ${callerPath}`);
+        }
+        const file = readToml(callerPath);
+        if (file === undefined) throw new Error(`no caller config at ${callerPath}`);
+        const table = file.devices;
+        const existing: Toml =
+          typeof table === "object" && table !== null && !Array.isArray(table) ? { ...(table as Toml) } : {};
+        if (!Object.hasOwn(existing, from)) throw new Error(`no device labelled \`${from}\``);
+        if (Object.hasOwn(existing, to)) throw new Error(`\`${to}\` is already a device label`);
+        const renamed: Toml = {};
+        for (const [label, address] of Object.entries(existing)) renamed[label === from ? to : label] = address;
+        writeToml(callerPath, { ...file, devices: renamed });
         break;
       }
       case "device.remove": {
@@ -174,6 +228,29 @@ export function createStateStore(options: CallerOptions = {}, env: NodeJS.Proces
         const trust = trustOf(file);
         const next = op.op === "trust.add" ? [...new Set([...trust, address])] : trust.filter((entry) => entry !== address);
         writeToml(devicePath, { ...file, trust: next });
+        if (op.op === "trust.remove") {
+          const labels = readTrustLabels(labelsPath);
+          if (labels[address] !== undefined) {
+            delete labels[address];
+            writeTrustLabels(labelsPath, labels);
+          }
+        }
+        break;
+      }
+      case "trust.label": {
+        const address = addressOfText(op.address);
+        const file = readToml(devicePath);
+        if (file === undefined) {
+          throw new Error(`this machine is not an eXe device: ${devicePath} does not exist (run \`exe\`)`);
+        }
+        if (!trustOf(file).includes(address)) {
+          throw new Error(`${address} is not trusted by this machine; add it first`);
+        }
+        const labels = readTrustLabels(labelsPath);
+        const label = typeof op.label === "string" ? op.label.trim() : "";
+        if (label.length === 0) delete labels[address];
+        else labels[address] = labelOf(label);
+        writeTrustLabels(labelsPath, labels);
         break;
       }
       default: {

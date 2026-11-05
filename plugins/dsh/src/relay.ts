@@ -70,6 +70,12 @@ export interface CallRequest {
   /** How long the call may live, which bounds the whole round trip. */
   ttlSeconds: number;
   signal: AbortSignal;
+  /**
+   * Poll pacing. The default backs off from 150 ms to 600 ms, which is the right
+   * trade for a command that runs for seconds; a ping asks for a tighter start
+   * so the number it reports is the round trip and not the poll interval.
+   */
+  poll?: { startMs: number; ceilingMs: number };
 }
 
 function reason(error: unknown): string {
@@ -210,7 +216,7 @@ export class Relay {
       );
     }
     try {
-      return await this.wait(envelope, ttl, request.signal);
+      return await this.wait(envelope, ttl, request.signal, request.poll);
     } catch (error) {
       // A cancelled call must stop being work on the device, not linger until it
       // expires. Best effort: the answer is already lost either way.
@@ -219,10 +225,16 @@ export class Relay {
     }
   }
 
-  private async wait(envelope: CallEnvelope, ttl: number, signal: AbortSignal): Promise<Outcome> {
+  private async wait(
+    envelope: CallEnvelope,
+    ttl: number,
+    signal: AbortSignal,
+    poll?: { startMs: number; ceilingMs: number },
+  ): Promise<Outcome> {
     const detailPath = `/api/calls/${envelope.call_id}`;
     const deadline = Date.now() + (ttl + 30) * 1000;
-    let wait = POLL_START_MS;
+    const ceiling = Math.max(poll?.ceilingMs ?? POLL_CEILING_MS, 10);
+    let wait = Math.min(Math.max(poll?.startMs ?? POLL_START_MS, 5), ceiling);
     for (;;) {
       if (signal.aborted) throw signal.reason ?? new Error("cancelled");
       if (Date.now() > deadline) throw new Error("no answer from the device before the call expired");
@@ -248,7 +260,7 @@ export class Relay {
           throw new Error(`unexpected call status \`${status}\``);
       }
       await sleep(wait, signal);
-      wait = Math.min(wait * 2, POLL_CEILING_MS);
+      wait = Math.min(wait * 2, ceiling);
     }
   }
 
