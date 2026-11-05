@@ -35,7 +35,7 @@ test("the panel reads the address a device has to trust, and both lists", () => 
   assert.equal(state.caller.configPath, join(dir, "mcp.toml"));
   assert.deepEqual(state.devices, [{ label: "lab", address: addressOf(device), source: "file" }]);
   assert.equal(state.device.available, true);
-  assert.deepEqual(state.device.trust, [addressOf(other)]);
+  assert.deepEqual(state.device.trust, [{ address: addressOf(other) }]);
   assert.equal(isAddress(state.device.address), true);
 });
 
@@ -65,9 +65,9 @@ test("trust is edited in the device file, which the device hot-reloads", () => {
   const store = createStateStore({}, env);
   const trusted = addressOf(newIdentity());
   const state = store.edit({ op: "trust.add", address: trusted });
-  assert.deepEqual(state.device.trust, [addressOf(other), trusted]);
+  assert.deepEqual(state.device.trust, [{ address: addressOf(other) }, { address: trusted }]);
   const after = store.edit({ op: "trust.remove", address: addressOf(other) });
-  assert.deepEqual(after.device.trust, [trusted]);
+  assert.deepEqual(after.device.trust, [{ address: trusted }]);
   assert.match(readFileSync(join(dir, "config.toml"), "utf8"), new RegExp(trusted));
 });
 
@@ -75,7 +75,53 @@ test("the same address twice is one trust entry", () => {
   const { env } = workspace();
   const store = createStateStore({}, env);
   const state = store.edit({ op: "trust.add", address: addressOf(other) });
-  assert.deepEqual(state.device.trust, [addressOf(other)]);
+  assert.deepEqual(state.device.trust, [{ address: addressOf(other) }]);
+});
+
+test("a device label can be renamed in place, and a taken one is refused", () => {
+  const { dir, env } = workspace();
+  const store = createStateStore({}, env);
+  const renamed = store.edit({ op: "device.rename", from: "lab", to: "workstation" });
+  assert.deepEqual(
+    renamed.devices.map((row) => row.label),
+    ["workstation"],
+  );
+  assert.match(readFileSync(join(dir, "mcp.toml"), "utf8"), /workstation = /);
+  store.edit({ op: "device.set", label: "phone", address: addressOf(newIdentity()) });
+  assert.throws(() => store.edit({ op: "device.rename", from: "phone", to: "workstation" }), /already a device label/);
+  assert.throws(() => store.edit({ op: "device.rename", from: "nope", to: "x" }), /no device labelled/);
+});
+
+test("a trusted caller can carry a label, kept beside the config", () => {
+  const { dir, env } = workspace();
+  const store = createStateStore({}, env);
+  const labelled = store.edit({ op: "trust.label", address: addressOf(other), label: "cz 的 MacBook" });
+  assert.deepEqual(labelled.device.trust, [{ address: addressOf(other), label: "cz 的 MacBook" }]);
+  assert.match(readFileSync(join(dir, "dsh-labels.json"), "utf8"), /cz 的 MacBook/);
+  // The eXe-owned file is untouched: labels never enter a schema `exe` rewrites.
+  assert.doesNotMatch(readFileSync(join(dir, "config.toml"), "utf8"), /cz 的 MacBook/);
+
+  const cleared = store.edit({ op: "trust.label", address: addressOf(other), label: "" });
+  assert.deepEqual(cleared.device.trust, [{ address: addressOf(other) }]);
+});
+
+test("a label is only for an address this machine actually trusts", () => {
+  const { env } = workspace();
+  const store = createStateStore({}, env);
+  assert.throws(
+    () => store.edit({ op: "trust.label", address: addressOf(newIdentity()), label: "x" }),
+    /is not trusted by this machine/,
+  );
+});
+
+test("untrusting a caller takes its label with it", () => {
+  const { env } = workspace();
+  const store = createStateStore({}, env);
+  store.edit({ op: "trust.label", address: addressOf(other), label: "gone" });
+  const after = store.edit({ op: "trust.remove", address: addressOf(other) });
+  assert.deepEqual(after.device.trust, []);
+  store.edit({ op: "trust.add", address: addressOf(other) });
+  assert.deepEqual(store.state().device.trust, [{ address: addressOf(other) }]);
 });
 
 test("a broken address or label is refused with the reason", () => {
