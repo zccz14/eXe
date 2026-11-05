@@ -27,9 +27,10 @@ interface Saved {
   name?: string;
 }
 
-/** The harness, cut down to the two seams this plugin touches. */
-function harness(options: { attachments?: boolean } = {}) {
+/** The harness, cut down to the seams this plugin touches. */
+function harness(options: { attachments?: boolean; webServer?: boolean } = {}) {
   const tools = new Map<string, Definition>();
+  const routes: Array<{ kind: string; path: string }> = [];
   const saved: Saved[] = [];
   const attachments =
     options.attachments === false
@@ -55,6 +56,12 @@ function harness(options: { attachments?: boolean } = {}) {
             };
           },
         };
+  const webServer = {
+    register(route: { kind: string; path: string }) {
+      routes.push(route);
+      return () => undefined;
+    },
+  };
   const ctx = {
     tools: {
       register: (definition: Definition) => {
@@ -63,8 +70,17 @@ function harness(options: { attachments?: boolean } = {}) {
       },
     },
     get: (name: string) => (name === "attachments" ? attachments : undefined),
+    // Cordis mixes the registry's `inject` onto the context: the callback runs
+    // only once the named service exists, in a child context.
+    inject: (deps: string[], callback: (scoped: unknown) => void) => {
+      if (deps.includes("webServer") && options.webServer === false) return;
+      callback({
+        webServer,
+        effect: (execute: () => () => void) => execute(),
+      });
+    },
   };
-  return { ctx: ctx as unknown as Context, tools, saved };
+  return { ctx: ctx as unknown as Context, tools, saved, routes };
 }
 
 /** A caller config on disk, pointing at one simulated device named `lab`. */
@@ -241,6 +257,19 @@ test("an unknown device is a list of what is configured", async () => {
     execute(tools, "exe_bash", { device: "nope", command: "true" }),
     /unknown device `nope`: configured: lab/,
   );
+});
+
+test("the panel's routes are registered only where a web server exists", () => {
+  const withServer = harness();
+  apply(withServer.ctx, Config({}));
+  assert.deepEqual(
+    withServer.routes.map((route) => `${route.kind} ${route.path}`),
+    ["prefix /exe/api"],
+  );
+
+  const headless = harness({ webServer: false });
+  apply(headless.ctx, Config({}));
+  assert.deepEqual(headless.routes, []);
 });
 
 test("a missing caller key fails at call time, with the command that fixes it", async () => {

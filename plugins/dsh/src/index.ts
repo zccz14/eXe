@@ -21,6 +21,8 @@ import type {} from "@deepseek-ai/dsh-attachment";
 import type { ImageAttachmentRef, ImageMediaType } from "@deepseek-ai/dsh-attachment";
 import { DEFAULT_ENDPOINTS, addressForDevice, resolveCaller, type Caller } from "./config.ts";
 import { Relay } from "./relay.ts";
+import { registerExeRoutes, type WebServerLike } from "./routes.ts";
+import { createStateStore } from "./state.ts";
 import { imageBase64, renderDevices, renderShell, shellAnswer, type DeviceRow } from "./answers.ts";
 
 export const name = "dsh-plugin-exe";
@@ -341,4 +343,14 @@ export function apply(ctx: Context, config: Config): void {
       },
     }),
   );
+
+  // The browser half (this package's `./client`) is a sidebar page: the caller's
+  // address — the string another device must trust — plus both device lists. It
+  // reads and writes through these two routes, which exist only where a web
+  // server does; a headless profile keeps the three tools and serves no page.
+  ctx.inject(["webServer"], (scoped) => {
+    const webServer = (scoped as unknown as { webServer: WebServerLike }).webServer;
+    const store = createStateStore(config);
+    scoped.effect(() => registerExeRoutes(webServer, store), "dsh-plugin-exe: panel routes");
+  });
 }

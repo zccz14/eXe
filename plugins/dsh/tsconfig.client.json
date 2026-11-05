@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["src/client/**/*.ts", "src/client/**/*.tsx", "src/contract.ts", "tests/client*.ts", "tests/client*.tsx"]
+}

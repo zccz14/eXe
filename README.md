@@ -111,7 +111,10 @@ dsh plugin --profile web add dsh-plugin-exe
 ```
 
 它读的是这台机器上 `exe mcp` 已经在用的那把调用方钥匙（`~/.config/exe/mcp.toml`），
-所以设备上已经信任过的地址不用改。源码与配置说明见
+所以设备上已经信任过的地址不用改。
+
+侧边栏还会多出一页 **eXe**：本机调用方地址（抄到别的设备上 `exe trust` 用）、
+这台机器作为设备信任谁，以及它够得着的设备清单——两条配置方向都能在这一页里改。源码与配置说明见
 [`plugins/dsh/README.md`](plugins/dsh/README.md)，发布走 `dsh-v*` 标签（npm trusted publishing）。
 
 ## 发布
