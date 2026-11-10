@@ -23,7 +23,7 @@ manifest.json + manifest.json.sig
 
 | # | 步骤 | 失败时 |
 |---|---|---|
-| 1 | `GET /api/releases/manifest.json` + `.sig`，验签 | 记一行日志，下个周期再来；设备不动 |
+| 1 | `GET /api/releases/manifest.json` + `.sig`，验签 | 记一行日志，5 分钟后重试（10、15 分钟递增，最长不超过正常周期）；设备不动 |
 | 2 | 比版本号：只认 `X.Y.Z`，且必须更大 | 已经是最新，结束 |
 | 3 | 等手上的调用跑完（最多 5 分钟，每 15 秒看一次） | 还在跑就放弃这一轮，下个周期再来 |
 | 4 | `GET /download/exe-<target>.bin`（**免解压的裸二进制**） | 重试在下一周期 |

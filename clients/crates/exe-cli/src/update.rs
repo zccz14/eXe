@@ -169,7 +169,7 @@ async fn signed_manifest(http: &reqwest::Client, endpoint: &str) -> Result<Relea
     // is never parsed before it is known who wrote it.
     let manifest = http
         .get(format!("{endpoint}/api/releases/manifest.json"))
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(30))
         .send()
         .await?
         .error_for_status()?
@@ -177,7 +177,7 @@ async fn signed_manifest(http: &reqwest::Client, endpoint: &str) -> Result<Relea
         .await?;
     let signature = http
         .get(format!("{endpoint}/api/releases/manifest.json.sig"))
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(30))
         .send()
         .await?
         .error_for_status()?
@@ -517,13 +517,28 @@ pub async fn serve(http: reqwest::Client, endpoints: Vec<String>, interval: Dura
     // Not the first thing a fresh start does: registering and opening the stream
     // come first, and a device that just came up has nothing to install anyway.
     tokio::time::sleep(settle(interval)).await;
+    let mut failures = 0u32;
     loop {
         match attempt(&http, &endpoints, &busy).await {
-            Ok(()) => {}
-            Err(error) => warn!(%error, "update check failed"),
+            Ok(()) => failures = 0,
+            Err(error) => {
+                failures += 1;
+                warn!(%error, "update check failed");
+            }
         }
-        tokio::time::sleep(interval).await;
+        // A relay that did not answer is not a reason to wait a whole interval:
+        // one timeout would otherwise cost a device an hour of being behind.
+        tokio::time::sleep(match failures {
+            0 => interval,
+            failures => retry(failures, interval),
+        })
+        .await;
     }
+}
+
+/// Retries climb 5, 10, 15 minutes and then never exceed the normal cadence.
+fn retry(failures: u32, interval: Duration) -> Duration {
+    (Duration::from_secs(300) * failures.min(3)).min(interval)
 }
 
 fn settle(interval: Duration) -> Duration {
@@ -646,6 +661,19 @@ mod tests {
             sha256: Some(exe_core::sha256_hex(b"abc")),
         };
         assert!(check(&short, b"abc").is_err(), "truncated download");
+    }
+
+    #[test]
+    fn a_failed_check_is_retried_before_the_next_interval() {
+        let hour = Duration::from_secs(3600);
+        assert_eq!(retry(1, hour), Duration::from_secs(300));
+        assert_eq!(retry(2, hour), Duration::from_secs(600));
+        assert_eq!(retry(9, hour), Duration::from_secs(900));
+        assert_eq!(
+            retry(1, Duration::from_secs(60)),
+            Duration::from_secs(60),
+            "never longer than the cadence itself"
+        );
     }
 
     #[test]
