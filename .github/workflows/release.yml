@@ -40,10 +40,10 @@ jobs:
             linker: aarch64-linux-gnu-gcc
             apt: gcc-aarch64-linux-gnu
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
             archive: tar.gz
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
             archive: tar.gz
           - target: x86_64-pc-windows-msvc
             os: windows-latest
@@ -103,7 +103,7 @@ jobs:
             os: ubuntu-latest
             ndk: true
           - target: aarch64-apple-ios
-            os: macos-14
+            os: macos-15
     runs-on: ${{ matrix.os }}
     continue-on-error: true
     steps:

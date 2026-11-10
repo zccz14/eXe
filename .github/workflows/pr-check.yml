@@ -74,7 +74,7 @@ jobs:
 
   app:
     name: macos app (swift)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
