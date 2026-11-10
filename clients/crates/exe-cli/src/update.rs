@@ -578,6 +578,12 @@ async fn attempt(http: &reqwest::Client, endpoints: &[String], busy: &Busy) -> R
     install(http, &endpoint, &manifest, Mode::Daemon).await
 }
 
+/// Whether this device rolled back from a version before. The daemon will not try
+/// it again; `exe upgrade` says so out loud, because a human may still insist.
+pub fn blocked(version: &str) -> bool {
+    load_state().blocked.iter().any(|entry| entry == version)
+}
+
 /// One line for `exe status`: what the device is set to do and where it stands.
 pub fn summary(config: &Config) -> String {
     let state = load_state();

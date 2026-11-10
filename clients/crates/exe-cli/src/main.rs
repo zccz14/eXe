@@ -446,6 +446,12 @@ async fn upgrade_command(check_only: bool) -> Result<()> {
         println!("nothing to do: this device is current");
         return Ok(());
     }
+    if update::blocked(&manifest.version) {
+        println!(
+            "note          this device rolled back from {} once; it will not try it again on its own",
+            manifest.version
+        );
+    }
     if check_only {
         return Ok(());
     }
