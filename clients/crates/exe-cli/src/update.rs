@@ -334,49 +334,30 @@ fn hand_over(current: &Path, mode: Mode) -> Result<()> {
         println!("installed; restart it when ready: `exe restart` or `exe`");
         return Ok(());
     }
-    match supervisor() {
-        // Leaving *is* the restart: one of these is running this very process and
-        // will start the same path again.
-        Supervisor::Service | Supervisor::App => {
-            info!("leaving so the supervisor starts the new binary");
-            std::process::exit(0);
-        }
-        // A logon task, a container, or a supervisor of the user's own: start the
-        // replacement here, because nothing else will.
-        Supervisor::None => {
-            spawn_replacement(current)?;
-            std::process::exit(0);
-        }
+    // Leaving *is* the restart when something is waiting for this process to go:
+    // it starts the same path again, which is now the new file.
+    if supervised() {
+        info!("leaving so the supervisor starts the new binary");
+        std::process::exit(0);
     }
+    // A logon task, a container, or a supervisor of the user's own: start the
+    // replacement here, because nothing else will.
+    spawn_replacement(current)?;
+    std::process::exit(0);
 }
 
-/// Who will start this path again when this process leaves.
+/// Whether something will start this path again when this process leaves.
 ///
 /// Both answers matter: exiting with nobody to restart leaves the device offline,
 /// and starting a replacement *under* a supervisor races that supervisor for the
 /// address lock — the loser then reports "already owns this address", which the
 /// macOS app reads as "hand the device over" and stops supervising for good.
-enum Supervisor {
-    /// launchd `KeepAlive` / systemd `Restart=always`, and it is running us.
-    Service,
-    /// The macOS app hosts the device as a child process and restarts it.
-    App,
-    None,
-}
-
-fn supervisor() -> Supervisor {
-    if matches!(
+fn supervised() -> bool {
+    let unit = matches!(
         service::detect(),
         service::Kind::LaunchAgent | service::Kind::SystemdUser
-    ) && service::state() == "running"
-    {
-        return Supervisor::Service;
-    }
-    #[cfg(target_os = "macos")]
-    if hosted_by_app() {
-        return Supervisor::App;
-    }
-    Supervisor::None
+    );
+    (unit && service::state() == "running") || hosted_by_app()
 }
 
 /// The parent of a device the app hosts is the bundle executable itself, so the
@@ -393,6 +374,11 @@ fn hosted_by_app() -> bool {
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
         .map(|command| command.ends_with("exe.app/Contents/MacOS/exe-app"))
         .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn hosted_by_app() -> bool {
+    false
 }
 
 fn spawn_replacement(current: &Path) -> Result<()> {
