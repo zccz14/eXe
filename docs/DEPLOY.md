@@ -9,6 +9,7 @@
 ```sh
 gh secret set CLOUDFLARE_API_TOKEN    # 只授：Workers Scripts:Edit / Workers Routes:Edit / D1:Edit / Pages:Edit / Account Settings:Read
 gh secret set CLOUDFLARE_ACCOUNT_ID   # b831a34938a75457b5029d31cea13c25
+gh secret set EXE_RELEASE_KEY < ~/.config/exe-release/release.pem   # 发布签名私钥，见 docs/UPDATE.md
 ```
 
 Token 缺失时工作流会跳过部署并打 warning，不会把 CI 变红。
@@ -64,7 +65,8 @@ pnpm version:check           # CI 跑这个；有任何漂移就失败
 ```
 
 发布走 GitHub Release：打 `v<version>` tag 触发 `release.yml`，它先校验 tag 与
-`package.json` 一致，再交叉编译五平台产物并发布。
+`package.json` 一致，再交叉编译五平台产物、生成 `manifest.json`、用 `EXE_RELEASE_KEY`
+签名（`scripts/sign-manifest.mjs`，公钥对不上就拒绝签名），最后一起发布。
 
 ## 客户端下载
 
@@ -78,6 +80,10 @@ pnpm version:check           # CI 跑这个；有任何漂移就失败
 3. `GET /download/<asset>` 只放行清单里的名字，302 到 GitHub 的下载地址。
 
 结果缓存 10 分钟；GitHub 不可达时退回「在 GitHub 上查看最新 Release」。
+
+设备不走这条路：`GET /api/releases/manifest.json` 与 `GET /api/releases/manifest.json.sig`
+把发布资产**原样**转出去，设备自己用编在二进制里的发布公钥验签（见 [`UPDATE.md`](UPDATE.md)）。
+中继因此仍然只是信使——它能扣住一次升级，改不动一次升级。
 
 仓库是 Public，所以**不需要任何凭据**，也不建议给 Worker 配 GitHub token：
 匿名 API 限额是按出网 IP 算的（60 次/小时），而 Worker 的出口 IP 与全平台租户共享，

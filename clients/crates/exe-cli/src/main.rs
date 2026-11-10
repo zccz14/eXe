@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use exe::{config, lock, logs, mcp, run, service};
+use exe::{config, lock, logs, mcp, run, service, update};
 use exe_core::protocol::request_headers;
 use exe_core::{parse_address, Identity};
 use std::io::IsTerminal;
@@ -17,6 +17,8 @@ USAGE:
     exe untrust <address>    Stop allowing calls from this address (hot).
     exe logs [-f]            Read the device log; -f follows it.
     exe start | stop | restart
+    exe upgrade [--check]    Move to the newest release now. The device does this
+                             by itself every hour; --check only reports.
     exe doctor               Check the key, the trust list and relay reachability.
     exe uninstall [--purge]  Remove the background service (and, with --purge, this key).
     exe run                  Run in the foreground: containers, or your own supervisor.
@@ -60,6 +62,14 @@ async fn main() -> Result<()> {
             service::start()
         }
         "uninstall" => uninstall(args.iter().any(|arg| arg == "--purge")),
+        "upgrade" => upgrade_command(args.iter().any(|arg| arg == "--check")).await,
+        // Not in the help: this is how an upgrade restarts a device that has no
+        // supervisor to do it, and it has to wait for the old process to let go.
+        "__relaunch" => {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let (cfg, _created) = config::load_or_create()?;
+            run::run(cfg).await
+        }
         "run" => {
             let (cfg, created) = config::load_or_create()?;
             announce(&cfg, created);
@@ -377,6 +387,7 @@ async fn status() -> Result<()> {
     let identity = cfg.identity()?;
     println!("config        {}", config::config_path().display());
     println!("address       {}", identity.address());
+    println!("version       exe {}", update::CURRENT);
     println!("endpoints     {}", cfg.endpoints().join(", "));
     if cfg.trust.is_empty() {
         println!("callers       (none — every call will be refused)");
@@ -398,6 +409,7 @@ async fn status() -> Result<()> {
         Some(pid) => println!("running       pid {pid}"),
         None => println!("running       no process on this address"),
     }
+    println!("update        {}", update::summary(&cfg));
     match probe_device(&cfg, &identity).await {
         Some((registered, online, platform)) => {
             println!(
@@ -411,6 +423,34 @@ async fn status() -> Result<()> {
     }
     println!("log           {}", logs::path().display());
     Ok(())
+}
+
+/// `exe upgrade` — the same check the device runs on its own, on demand.
+async fn upgrade_command(check_only: bool) -> Result<()> {
+    let cfg = config::load()?;
+    println!("running       exe {}", update::CURRENT);
+    if !update::supported() {
+        bail!(
+            "no prebuilt binary for {}-{}; build from source instead",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+    }
+    let http = reqwest::Client::builder()
+        .user_agent(concat!("exe/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let endpoints = cfg.endpoints();
+    let (endpoint, manifest) = update::latest(&http, &endpoints).await?;
+    println!("latest        exe {} ({})", manifest.version, manifest.tag);
+    if !exe_core::release::is_newer(&manifest.version, update::CURRENT) {
+        println!("nothing to do: this device is current");
+        return Ok(());
+    }
+    if check_only {
+        return Ok(());
+    }
+    println!("relay         {endpoint}");
+    update::install(&http, &endpoint, &manifest, update::Mode::Manual).await
 }
 
 async fn doctor() -> Result<()> {

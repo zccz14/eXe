@@ -68,6 +68,12 @@ export default {
 
       // --- client binaries: latest GitHub Release, proxied -------------------
       if (path === "/api/releases/latest" && method === "GET") return withCors(request, env, await releases.latest(env));
+      // The signed pair a device upgrades from: the document and the signature
+      // over it, byte for byte.
+      if (path === "/api/releases/manifest.json" && method === "GET")
+        return withCors(request, env, await releases.manifest(env));
+      if (path === "/api/releases/manifest.json.sig" && method === "GET")
+        return withCors(request, env, await releases.signature(env));
       // One stable address for the installer, so the one-liner never changes:
       // the bytes are release assets like every other file, and the release that
       // carries them is the release whose binary they install.

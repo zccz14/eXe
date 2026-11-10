@@ -72,6 +72,9 @@ jobs:
           cd clients/target/${{ matrix.target }}/release
           tar czf exe-${{ matrix.target }}.tar.gz exe
           shasum -a 256 exe-${{ matrix.target }}.tar.gz > exe-${{ matrix.target }}.tar.gz.sha256
+          # The updater takes this one: no archive to unpack, no path to guess,
+          # one checksum (in the signed manifest) to check.
+          cp exe exe-${{ matrix.target }}.bin
       - name: Package (windows)
         if: matrix.archive == 'zip'
         shell: pwsh
@@ -79,12 +82,16 @@ jobs:
           cd clients/target/${{ matrix.target }}/release
           Compress-Archive -Path exe.exe -DestinationPath exe-${{ matrix.target }}.zip
           (Get-FileHash exe-${{ matrix.target }}.zip -Algorithm SHA256).Hash.ToLower() + "  exe-${{ matrix.target }}.zip" | Out-File exe-${{ matrix.target }}.zip.sha256 -Encoding ascii
+          Copy-Item exe.exe exe-${{ matrix.target }}.bin
       - uses: actions/upload-artifact@v4
         with:
           name: exe-${{ matrix.target }}
           path: |
-            clients/target/${{ matrix.target }}/release/exe-${{ matrix.target }}.t*
-            clients/target/${{ matrix.target }}/release/exe-${{ matrix.target }}.z*
+            clients/target/${{ matrix.target }}/release/exe-${{ matrix.target }}.tar.gz
+            clients/target/${{ matrix.target }}/release/exe-${{ matrix.target }}.tar.gz.sha256
+            clients/target/${{ matrix.target }}/release/exe-${{ matrix.target }}.zip
+            clients/target/${{ matrix.target }}/release/exe-${{ matrix.target }}.zip.sha256
+            clients/target/${{ matrix.target }}/release/exe-${{ matrix.target }}.bin
 
   mobile:
     name: mobile libraries (${{ matrix.target }})
@@ -165,6 +172,13 @@ jobs:
           writeFileSync("artifacts/manifest.json", JSON.stringify({ version, tag, files }, null, 2));
           console.log(`manifest: ${files.length} files for ${tag || "(no tag)"}`);
           JS
+      # A device upgrades only from a manifest signed by the release key it was
+      # built with. No signature, no upgrade — so an unsigned release is a failed
+      # release, not a quiet one.
+      - name: Sign the manifest
+        env:
+          EXE_RELEASE_KEY: ${{ secrets.EXE_RELEASE_KEY }}
+        run: node scripts/sign-manifest.mjs artifacts/manifest.json
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*

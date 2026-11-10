@@ -29,6 +29,10 @@ interface ReleaseManifest {
 interface Resolved {
   tag: string;
   manifest: ReleaseManifest;
+  /** The exact bytes the signature covers: a device verifies before it parses. */
+  bytes: ArrayBuffer;
+  /** Detached Ed25519 signature, base64. Empty when the release was not signed. */
+  signature: string;
 }
 
 interface CacheEntry extends Resolved {
@@ -56,14 +60,23 @@ async function resolveTag(env: Env): Promise<string | null> {
   return match ? decodeURIComponent(match[1]!) : null;
 }
 
-async function resolveManifest(env: Env, tag: string): Promise<ReleaseManifest | null> {
-  const response = await fetch(`https://github.com/${repository(env)}/releases/download/${tag}/manifest.json`, {
-    headers: { "user-agent": "exe-relay" },
-  });
+async function resolveManifest(env: Env, tag: string): Promise<Resolved | null> {
+  const base = `https://github.com/${repository(env)}/releases/download/${tag}`;
+  const response = await fetch(`${base}/manifest.json`, { headers: { "user-agent": "exe-relay" } });
   if (!response.ok) return null;
-  const manifest = (await response.json()) as ReleaseManifest;
+  const bytes = await response.arrayBuffer();
+  let manifest: ReleaseManifest;
+  try {
+    manifest = JSON.parse(new TextDecoder().decode(bytes)) as ReleaseManifest;
+  } catch {
+    return null;
+  }
   if (!Array.isArray(manifest.files) || typeof manifest.tag !== "string") return null;
-  return manifest;
+  // The signature rides along uncached-but-for-our-cache: without it a device
+  // refuses the release, which is the point of the whole arrangement.
+  const signed = await fetch(`${base}/manifest.json.sig`, { headers: { "user-agent": "exe-relay" } });
+  const signature = signed.ok ? await signed.text() : "";
+  return { tag, manifest, bytes, signature };
 }
 
 async function latestRelease(env: Env): Promise<Resolved | null> {
@@ -73,9 +86,9 @@ async function latestRelease(env: Env): Promise<Resolved | null> {
   try {
     const tag = await resolveTag(env);
     if (!tag) return null;
-    const manifest = await resolveManifest(env, tag);
-    if (!manifest) return null;
-    cache = { repo, expiresAt: Date.now() + CACHE_MS, tag, manifest };
+    const resolved = await resolveManifest(env, tag);
+    if (!resolved) return null;
+    cache = { repo, expiresAt: Date.now() + CACHE_MS, ...resolved };
     return cache;
   } catch {
     // GitHub unreachable: keep serving the last answer we had, if any.
@@ -125,5 +138,31 @@ export async function download(env: Env, name: string): Promise<Response> {
       location: `https://github.com/${repository(env)}/releases/download/${resolved.tag}/${encodeURIComponent(name)}`,
       "cache-control": "no-store",
     },
+  });
+}
+
+/**
+ * GET /api/releases/manifest.json — the exact bytes the signature covers.
+ *
+ * Devices do not parse `/api/releases/latest` to decide anything: this endpoint
+ * hands over the document, `manifest.json.sig` hands over the signature, and the
+ * client decides. Proxying the release asset verbatim is what keeps the relay a
+ * courier here: it cannot edit a manifest into something a device would accept.
+ */
+export async function manifest(env: Env): Promise<Response> {
+  const resolved = await latestRelease(env);
+  if (!resolved) throw new ApiError(404, "no release has been published");
+  return new Response(resolved.bytes, {
+    headers: { "content-type": "application/json", "cache-control": "public, max-age=600" },
+  });
+}
+
+/** GET /api/releases/manifest.json.sig — detached Ed25519 signature, base64. */
+export async function signature(env: Env): Promise<Response> {
+  const resolved = await latestRelease(env);
+  if (!resolved) throw new ApiError(404, "no release has been published");
+  if (resolved.signature.trim() === "") throw new ApiError(503, "this release is not signed");
+  return new Response(resolved.signature, {
+    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "public, max-age=600" },
   });
 }
