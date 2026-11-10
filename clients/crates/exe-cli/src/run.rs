@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::config::{self, Config};
+use crate::update;
 
 type Tasks = Arc<Mutex<HashMap<String, JoinHandle<()>>>>;
 
@@ -112,6 +113,9 @@ pub async fn run(config: Config) -> Result<()> {
     // A service has no terminal: the previous generation of the log is kept, and
     // a second process on this address is refused before it can run anything twice.
     crate::logs::rotate();
+    // Before the address is claimed: a pending upgrade either confirms itself or
+    // puts the previous binary back, and the relay only ever sees the survivor.
+    update::begin_trial()?;
     let _lock = crate::lock::acquire()?;
     let identity = config.identity()?;
     let bad_trust = config.check_trust();
@@ -135,6 +139,29 @@ pub async fn run(config: Config) -> Result<()> {
     let run_id = uuid::Uuid::now_v7().to_string();
     let tasks: Tasks = Arc::default();
     let results: Arc<Mutex<ResultCache>> = Arc::default();
+
+    // The device keeps itself current without anyone visiting it: one signed
+    // check an hour, and an upgrade only while nothing is executing.
+    if config.update.auto
+        && std::env::var("EXE_UPDATE")
+            .map(|value| value != "off")
+            .unwrap_or(true)
+    {
+        let interval = std::time::Duration::from_secs(config.update.interval_seconds.max(60));
+        let busy_tasks = tasks.clone();
+        let busy: update::Busy = Arc::new(move || {
+            busy_tasks
+                .try_lock()
+                .map(|running| !running.is_empty())
+                .unwrap_or(true)
+        });
+        tokio::spawn(update::serve(
+            http.clone(),
+            endpoints.clone(),
+            interval,
+            busy,
+        ));
+    }
 
     let trust: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(config.trust.clone()));
     // Adding a caller edits the file; the device re-reads it, re-registers, and

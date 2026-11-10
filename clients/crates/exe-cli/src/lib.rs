@@ -6,3 +6,4 @@ pub mod logs;
 pub mod mcp;
 pub mod run;
 pub mod service;
+pub mod update;

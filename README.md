@@ -123,4 +123,8 @@ dsh plugin --profile web add dsh-plugin-exe
 发（`/download/install.sh`，再由 `/install.sh` 转发）。macOS 上还有一个桌面客户端，它把设备进程托管进 `.app`（授权才能跨版本存活）：
 `scripts/build-app.sh && open dist/exe.app`，见 [`docs/APP.md`](docs/APP.md)。
 
+设备会自己往前走：每小时验一次签名过的 `manifest.json`，比自己的新就装，装完交给
+supervisor 重启，活过 90 秒才算数——站不住就把上一版换回来并把那个版本拉黑。
+设计、失败路径与发布密钥见 [`docs/UPDATE.md`](docs/UPDATE.md)。
+
 服务端部署、控制台开发与产物构建见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。

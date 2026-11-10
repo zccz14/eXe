@@ -27,6 +27,37 @@ pub struct Config {
     /// only the human at this machine decides who is on the list.
     #[serde(default)]
     pub trust: Vec<String>,
+    /// How the device keeps itself current. On by default: a device that needs
+    /// someone to visit it to stay current is not current, it is abandoned.
+    #[serde(default)]
+    pub update: Update,
+}
+
+/// The `[update]` section. A device upgrades itself from signed releases; the
+/// only decisions left are whether to, and how often to look.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Update {
+    #[serde(default = "yes")]
+    pub auto: bool,
+    #[serde(default = "hourly")]
+    pub interval_seconds: u64,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn hourly() -> u64 {
+    3600
+}
+
+impl Default for Update {
+    fn default() -> Self {
+        Update {
+            auto: yes(),
+            interval_seconds: hourly(),
+        }
+    }
 }
 
 /// A base URL per entry, trimmed: a trailing slash would double up in a join.
@@ -116,6 +147,7 @@ pub fn load_or_create() -> Result<(Config, bool)> {
                 cloud: None,
                 secret: Identity::generate().secret(),
                 trust: Vec::new(),
+                update: Update::default(),
             };
             save(&config)?;
             Ok((config, true))
@@ -176,6 +208,7 @@ mod tests {
             cloud: None,
             secret: "s".into(),
             trust: Vec::new(),
+            update: Update::default(),
         };
         let text = toml::to_string_pretty(&config).unwrap();
         assert!(text.contains("endpoints = ["));
